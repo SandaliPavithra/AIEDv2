@@ -1,6 +1,6 @@
 # Official Backend Design — AI Education Platform
-**Version:** 3.0  
-**Last Updated:** April 2026  
+**Version:** 7.0  
+**Last Updated:** May 2026  
 **Status:** Approved for development
 
 ---
@@ -13,13 +13,57 @@
 | Vector store | pgvector extension within Supabase |
 | File storage | Supabase Storage (PDFs) |
 | Search strategy | Hybrid — pgvector (semantic 60%) + PostgreSQL FTS (keyword 40%) |
-| Embeddings | Google `text-embedding-004` (768 dimensions) |
+| Embeddings | Google `gemini-embedding-001` (3072 dim default; set to 768 via MRL for storage efficiency) |
 | Question generation | Claude Haiku 4.5 |
 | Evaluation + scoring | Claude Sonnet 4.6 |
-| Hallucination checker | xAI Grok |
+| Hallucination verification | Claude Sonnet 4.6 (Option C — 15% sampling + trigger-based, separate prompt) |
+| Evaluation fallback | Qwen3 32B via Groq API (`qwen/qwen3-32b`, emergency only, flagged in DB) |
 | Auth / 2FA | Microsoft Entra ID |
 | Backend | FastAPI (Python) |
 | Frontend | React + CSS/HTML |
+
+---
+
+## Model Selection Justification
+
+### Claude Sonnet 4.6 — Evaluation Engine
+
+Evaluation requires multi-dimensional reasoning across five scoring dimensions simultaneously — factual correctness, structure, precision, recall, and bias-neutral wording — while cross-referencing the student's answer against a source chunk and a list of expected concepts. This demands the highest available reasoning depth and truth-adherence.
+
+BullshitBench v2 benchmark results across all providers tested:
+
+| Model | Clear pushback | Decision |
+|---|---|---|
+| Claude Sonnet 4.6 | 91% | **Selected** — highest of all models tested |
+| Qwen3.5 397b | 67.5% | Emergency fallback only |
+| Claude Opus 4.6 | 83% | Eliminated — lower pushback than Sonnet, significantly higher cost |
+| Grok 4.3 | 50% | Removed — see below |
+| Google best | 37.5% | Rejected |
+| GPT-4o Mini | 20% | Rejected — worst pushback, 30% accepted nonsense |
+
+Opus 4.6 scores lower than Sonnet at 83% and costs significantly more — eliminated on both reliability and cost grounds. Haiku 4.5 lacks the reasoning depth for nuanced multi-dimensional scoring. Sonnet 4.6 is the only model that passes every requirement for the evaluation role.
+
+### Hallucination Verification — Sonnet 4.6 (Option C: sampling + trigger-based)
+
+Sonnet performs its own verification pass using a completely different prompt — not "evaluate this answer" but "you previously produced this evaluation, here is the original source chunk, identify any claims in your evaluation that cannot be supported by the source material." At temperature 0.1 this is a reliable cross-referencing task.
+
+Verification does not run on every evaluation. It triggers under two conditions:
+- **Random 15% statistical sampling** — baseline quality monitoring
+- **Automatic trigger on suspicious outputs:** overall score above 95 or below 5, concepts appearing in feedback that were not in the expected concepts list, or feedback text exceeding 1500 characters
+
+Additional cost: approximately $0.30/month at moderate usage. Negligible.
+
+### Why Grok 4.3 Was Removed
+
+Grok 4.3 was initially proposed as the hallucination checker. BullshitBench v2 shows Grok 4.3 achieves 50% clear pushback — meaning it accepts fabricated content 50% of the time. Using a model with 50% pushback to verify a model with 91% pushback is architecturally unsound. You are asking a less truth-adherent model to fact-check a more truth-adherent model. Grok is removed entirely from the stack.
+
+### Qwen3 32B via Groq — Emergency Fallback
+
+When Anthropic services are unavailable, evaluation falls back to Qwen3 32B (`qwen/qwen3-32b`) via Groq's API. At 67.5% clear pushback it is the second-highest performer across all providers tested — significantly ahead of Google's best (37.5%) and OpenAI's best (37.5%). GPT-4o Mini was considered and rejected at 20% clear pushback with 30% accepted nonsense — unsuitable for any evaluation role in an education platform regardless of cost.
+
+**Model correction (v7.0):** The fallback was previously documented as "Qwen3.5 397B" — this model does not exist on Groq. Available Qwen models on Groq are `qwen/qwen3-32b` (131k context, Preview status) and `qwen-qwq-32b` (128k context, Preview status). Qwen3 32B is selected as the fallback — it supports thinking mode and has the larger context window. Note: Groq lists both as **Preview** status, meaning they can be deprecated without notice.
+
+Qwen is open source and hosted on separate infrastructure from Anthropic, providing genuine redundancy. It is never called in normal operation. Fallback evaluations are flagged in `evaluations.fallback_model_used` so admins can identify and review any session that ran on the fallback model.
 
 ---
 
@@ -30,6 +74,143 @@
 | Chunk size | 800–1000 tokens | AIML explanations need context — 500 tokens cuts off derivations |
 | Overlap | 150–200 tokens | Prevents concept split across chunk boundaries |
 | Search weights | 60% semantic / 40% keyword | Semantic catches concepts, keyword catches exact technical terms |
+
+---
+
+## Storage Architecture
+
+Two separate storage concerns with different cost curves.
+
+### Supabase Storage — Raw PDFs
+
+| Metric | Value |
+|---|---|
+| Average book size | ~20MB |
+| 10-book library | ~200MB |
+| 50-book library | ~1GB |
+| 100-book library | ~2GB |
+| Supabase Pro included | 100GB |
+| Overage | $0.021/GB |
+
+**Verdict:** Not a real concern. 5,000 books before hitting the free tier ceiling.
+
+### pgvector DB — Embeddings + Chunk Text
+
+| Metric | Value |
+|---|---|
+| Embedding dimensions | 768 float32 values |
+| Bytes per embedding | 768 × 4 bytes = 3,072 bytes ≈ 3KB |
+| Chunk text | ~500 bytes per chunk |
+| Total per chunk | ~3.5KB |
+| Chunks per 400-page book | ~800 |
+| DB cost per book | ~2.8MB |
+| 10 books | ~28MB |
+| 100 books | ~280MB |
+| Supabase Pro DB included | 8GB |
+| Overage | $0.125/GB |
+
+**Verdict:** Well within limits for a long time. 100 books uses less than 4% of included DB storage.
+
+### When Storage Actually Becomes a Problem
+
+Neither storage tier is a cost concern at current scale. The real problem is **content duplication and library quality**. If 50 students each upload slightly different editions of the same textbook:
+
+- 50 duplicate documents in Supabase Storage
+- 50 × 800 = 40,000 duplicate chunks in pgvector
+- RAG retrieval returns redundant results from near-identical chunks
+- Recommendation engine points to duplicate sections
+- Admin has no visibility into what's actually in the library
+
+This is solved by duplicate detection before ingestion — see below.
+
+### Upload Scope: Shared vs Personal
+
+| Upload type | Who | Pool | Duplicate check | TTL |
+|---|---|---|---|---|
+| Admin upload | Admin only | Shared library — all students | Yes — before ingestion | Permanent |
+| Student upload | Student | Personal pool — that student only | No | 7 days then hard deleted |
+
+Student uploads are temporary personal notes, never ingested into the shared library. Duplicate detection only applies to admin uploads.
+
+---
+
+## Document Ingestion & Duplicate Detection
+
+### What It Is
+
+A FastAPI endpoint that embeds the first ~3 pages of an uploaded PDF and queries pgvector for similar existing documents before any ingestion begins. Nothing is stored until the check passes.
+
+### Why Not n8n
+
+This is a FastAPI endpoint that calls Google's embedding API and queries pgvector. No orchestration layer needed — approximately 20 lines of Python.
+
+### Flow
+
+```
+Admin submits PDF
+        │
+        ▼
+Extract first 3 pages → generate embedding (Google text-embedding-004)
+        │
+        ▼
+Query pgvector: match against chunk_index = 0 of all existing shared documents
+(nothing written to DB yet)
+        │
+        ├── similarity > 0.92 → return warning:
+        │     "Warning: 94% similar to 'Introduction to ML — Tom Mitchell'
+        │      uploaded 2024-03. Proceed anyway?"
+        │     [ Cancel ]  [ Upload Anyway ]
+        │
+        └── similarity < 0.92 → proceed with full ingestion
+```
+
+### Implementation
+
+```python
+async def check_duplicate(file_content: bytes, db) -> dict:
+    sample_text = extract_sample(file_content, pages=3)
+    sample_embedding = await embed(sample_text)
+
+    # Only check against first chunk of each document — fast and sufficient
+    rows = await db.fetch("""
+        SELECT d.id, d.title, d.author, d.uploaded_at,
+               1 - (dc.embedding <=> $1::vector) AS similarity
+        FROM document_chunks dc
+        JOIN documents d ON dc.document_id = d.id
+        WHERE dc.chunk_index = 0
+          AND d.access_scope = 'shared'
+          AND 1 - (dc.embedding <=> $1::vector) > 0.92
+        ORDER BY similarity DESC
+        LIMIT 3
+    """, sample_embedding)
+
+    if rows:
+        return {
+            "duplicate_found": True,
+            "similar_documents": [
+                {"title": r["title"], "author": r["author"],
+                 "similarity": round(r["similarity"], 3),
+                 "uploaded_at": r["uploaded_at"]}
+                for r in rows
+            ]
+        }
+
+    return {"duplicate_found": False}
+```
+
+### Similarity Threshold
+
+`0.92` — high enough to catch same book different editions, low enough to allow genuinely different books on the same topic. Configurable in `config.py`.
+
+### What Was Added / Removed (v5.0)
+
+| Change | Detail |
+|---|---|
+| **Added** | Storage Architecture section — DB and Storage cost math |
+| **Added** | Duplicate detection endpoint — pre-ingestion similarity check |
+| **Added** | `access_scope` column on `documents` table — `shared` / `personal` |
+| **Added** | `expires_at` column on `documents` table — 7-day TTL for student uploads |
+| **Not added** | n8n — not needed for this use case |
 
 ---
 
@@ -56,13 +237,23 @@ Evaluation temperature is fixed across all difficulties. The scoring rubric does
 |---|---|---|---|
 | All difficulties | 0.1 | 0.80 | Near-deterministic — evaluation must be reproducible and consistent |
 
-### Hallucination Checker (xAI Grok)
+### Hallucination Verification (Sonnet 4.6 — Option C)
 
-Grok's role is a binary fact-check on Sonnet's evaluation output — does this evaluation contain hallucinated claims? This is a yes/no decision requiring zero creativity.
+Sonnet performs a self-verification pass using a separate prompt. The task is cross-referencing its own evaluation against the source chunk — not creative, but analytical. Temperature is near-zero for reproducibility.
 
 | Use case | Temperature | Top P | Reason |
 |---|---|---|---|
-| All checks | 0.0 | 0.75 | Fully deterministic — no randomness appropriate for a binary flag decision |
+| Verification pass | 0.1 | 0.75 | Near-deterministic — analytical cross-reference, not generative |
+
+Triggers: 15% random sampling + automatic on score >95 or <5, unexpected concepts in feedback, or feedback >1500 chars.
+
+### Fallback Evaluation (Qwen3.5 397b via Groq)
+
+Uses the same evaluation prompt and temperature as Sonnet. No separate config — inherits `EVALUATION_CONFIG`. Called only when Anthropic API is unavailable. Results flagged in DB.
+
+| Use case | Temperature | Top P | Reason |
+|---|---|---|---|
+| Emergency fallback | 0.1 | 0.80 | Matches Sonnet evaluation config for consistency |
 
 ### RAG Retrieval Top K
 
@@ -90,9 +281,18 @@ EVALUATION_CONFIG = {
     "top_p": 0.80,
 }
 
-HALLUCINATION_CONFIG = {
-    "temperature": 0.0,
+# Reuses same model (Sonnet 4.6) with a different prompt — not Grok
+VERIFICATION_CONFIG = {
+    "temperature": 0.1,
     "top_p": 0.75,
+}
+
+# Inherits EVALUATION_CONFIG — only active when Anthropic is down
+FALLBACK_CONFIG = {
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",  # Qwen3.5-397b does not exist on Groq
+    "temperature": 0.1,
+    "top_p": 0.80,
 }
 ```
 
@@ -364,9 +564,11 @@ Metadata for every uploaded textbook or past paper. Raw PDF in Supabase Storage.
 | `total_pages` | `int` | Extracted during ingestion |
 | `total_chunks` | `int` | Populated after ingestion completes |
 | `ingestion_status` | `varchar(50)` | `pending` / `processing` / `complete` / `failed` |
-| `uploaded_by` | `uuid` FK → `users.id` | Admin who uploaded |
+| `access_scope` | `varchar(20)` | `shared` (admin upload → shared library) / `personal` (student upload → personal pool only) |
+| `uploaded_by` | `uuid` FK → `users.id` | Admin or student who uploaded |
 | `uploaded_at` | `timestamptz` | |
-| `topic_id` | `uuid` FK → `topics.id` | Primary subject area |
+| `expires_at` | `timestamptz` | NULL for shared documents. `uploaded_at + 7 days` for personal student uploads — nightly cleanup deletes expired rows and their chunks |
+| `topic_id` | `uuid` FK → `topics.id` | Primary subject area — NULL allowed for personal uploads |
 
 ---
 
@@ -404,7 +606,7 @@ Core RAG table. One row per chunk with embedding, FTS vector, and full citation 
 | `chapter` | `varchar(255)` | Chapter title, extracted during ingestion |
 | `section` | `varchar(255)` | Section heading, extracted during ingestion |
 | `difficulty` | `varchar(20)` | Inherited from document or AI-tagged per chunk |
-| `embedding` | `vector(768)` | Google `text-embedding-004` output |
+| `embedding` | `vector(768)` | Google `gemini-embedding-001` output — 768 dim via MRL (default is 3072, set `output_dimensionality=768`) |
 | `fts_vector` | `tsvector` | PostgreSQL FTS vector, auto-populated via trigger |
 | `created_at` | `timestamptz` | |
 
@@ -514,7 +716,7 @@ Permanent aggregated behavioural metrics computed from `question_events` on answ
 ---
 
 ### 15. `evaluations`
-Per-question evaluation output from Sonnet 4.6 and xAI Grok. Permanent. Records exact evaluation settings for full reproducibility.
+Per-question evaluation output from Sonnet 4.6. Permanent. Records exact evaluation settings for full reproducibility. Grok removed — verification is now a Sonnet self-check (Option C). Fallback to Qwen3.5 397b via Groq flagged per row.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -535,12 +737,15 @@ Per-question evaluation output from Sonnet 4.6 and xAI Grok. Permanent. Records 
 | `concepts_covered` | `jsonb` | Subset of expected_concepts addressed |
 | `concepts_missed` | `jsonb` | Subset of expected_concepts missed — feeds recommendations |
 | `feedback_text` | `text` | Sonnet-generated human-readable feedback |
-| `hallucination_flag` | `boolean` | `true` if xAI Grok flagged this evaluation |
-| `hallucination_note` | `text` | Description of what was flagged |
+| `hallucination_flag` | `boolean` | `true` if Sonnet verification pass flagged this evaluation |
+| `hallucination_note` | `text` | Description of what was flagged by the verification pass |
+| `verification_ran` | `boolean` | `true` if a verification pass was triggered (sampling or threshold) |
 | `evaluator_model` | `varchar(100)` | e.g. `claude-sonnet-4-6` |
+| `verifier_model` | `varchar(100)` | Same as evaluator — `claude-sonnet-4-6` — separate prompt, separate call |
 | `evaluation_temperature` | `numeric(3,2)` | Temperature used for this evaluation call |
 | `evaluation_top_p` | `numeric(3,2)` | Top P used for this evaluation call |
-| `checker_model` | `varchar(100)` | e.g. `grok-2` |
+| `fallback_model_used` | `boolean` | `true` if Anthropic was unavailable and Qwen fallback was used |
+| `fallback_model` | `varchar(100)` | e.g. `qwen3.5-397b` — NULL if primary model used |
 | `created_at` | `timestamptz` | |
 
 ---
@@ -679,6 +884,8 @@ ADD CONSTRAINT uq_user_document UNIQUE (user_id, document_id);
 
 -- Nightly cleanup Edge Function:
 -- DELETE FROM question_events WHERE expires_at < now();
+-- DELETE FROM documents WHERE expires_at IS NOT NULL AND expires_at < now();
+-- (cascades to document_chunks via FK — also deletes Supabase Storage object via storage_key)
 
 -- Progress snapshot Edge Function:
 -- Fires when test_sessions.status changes to 'completed'
@@ -708,3 +915,85 @@ ADD CONSTRAINT uq_user_document UNIQUE (user_id, document_id);
 | 15 | `evaluations` | Per-question scores, feedback, and evaluation settings |
 | 16 | `recommendations` | Exact section recommendations |
 | 17 | `progress_snapshots` | Pre-aggregated dashboard data |
+
+---
+
+## Deployment Architecture
+
+### Infrastructure
+
+Both the FastAPI backend and React frontend are deployed as separate Docker containers on a single Hetzner CPX21 Singapore VPS. Each container is exposed publicly via its own Cloudflare Tunnel on separate subdomains.
+
+| Component | Detail |
+|---|---|
+| VPS | Hetzner CPX21 Singapore — 3 vCPU, 4GB RAM |
+| Backend URL | `api.yourdomain.com` → Cloudflare Tunnel → port 8000 |
+| Frontend URL | `app.yourdomain.com` → Cloudflare Tunnel → port 3000 |
+| SSL | Cloudflare automatic on both tunnels — free |
+| Monthly cost | ~$17 total (Hetzner $16 + Domain $1) |
+
+### Why Not the Alternatives
+
+**Railway ($5/month):** 512MB RAM limit crashes during PDF ingestion. PyMuPDF parsing and LangChain chunking on a 400-page textbook peaks at 1–2GB RAM. Discarded — insufficient RAM for the ingestion pipeline regardless of cost.
+
+**Vercel (frontend):** Initially considered for hosting the React frontend separately on the free tier. Discarded — deployment model calls for both frontend and backend in Docker containers on the same infrastructure. The React frontend is built and served via Nginx inside its own Docker container. No external platform dependency needed.
+
+**AWS EC2 ap-southeast-1:** ~$20/month for a t4g.small with only 2GB RAM plus separate EBS storage costs. More expensive than Hetzner for inferior specs, significantly more complex to configure for a solo deployment. Discarded on both cost and complexity grounds.
+
+**Cloudflare Tunnel over direct port exposure:** No ports open on the VPS, real server IP never exposed, SSL handled automatically by Cloudflare. No Nginx reverse proxy configuration needed for SSL termination. Free on Cloudflare's free plan.
+
+**CRITICAL — SSE streaming limitation:** Cloudflare Tunnel buffers GET-based Server-Sent Events (SSE) — events are held and flushed only when the server closes the connection, not in real-time. This is a known unresolved bug (GitHub issue #1449, open since April 2025, unresolved as of May 2026). Headers like `Cache-Control: no-store` and `X-Accel-Buffering: no` do not fix it — buffering occurs at Cloudflare's edge, not the origin. If any FastAPI endpoint uses SSE for streaming responses (evaluation feedback, goal chatbot streaming), it must either use POST-based streaming or bypass the Tunnel for that endpoint. WebSocket is unaffected.
+
+**Cloudflare Free over Pro:** Cloudflare Pro adds advanced WAF rules, image optimisation, and enhanced analytics at $20/month. None relevant for an API backend and static frontend at this scale. Free plan provides Tunnel, DNS, SSL, and basic DDoS protection — everything required. Pro reconsidered when traffic scales beyond free tier limits.
+
+### Docker Compose
+
+```yaml
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+```
+
+**Backend Dockerfile:** Uvicorn serving FastAPI.  
+**Frontend Dockerfile:** Multi-stage build — Node builds the React app, Nginx serves the static output.
+
+### CI/CD Pipeline
+
+`dev` branch for development work. Merge to `main` triggers GitHub Actions which SSHs into the Hetzner VPS and runs:
+
+```bash
+cd /app
+git pull origin main
+docker compose down
+docker compose up -d --build
+```
+
+Both containers rebuild and restart automatically. GitHub Actions free tier provides 2,000 minutes/month for private repos — sufficient for this deployment cadence.
+
+### What Was Added / Removed (v6.0)
+
+| Change | Detail |
+|---|---|
+| **Added** | Deployment Architecture section — full VPS, tunnel, CI/CD, Docker Compose spec |
+| **Removed** | Vercel — frontend now served via Nginx Docker container on Hetzner |
+| **Removed** | Railway — discarded; 512MB RAM insufficient for ingestion pipeline |
+| **Rejected** | AWS EC2 — more expensive, inferior specs, higher configuration complexity |
+
+### What Was Added / Removed (v7.0)
+
+| Change | Detail |
+|---|---|
+| **Fixed** | Embedding model: `text-embedding-004` → `gemini-embedding-001` (text-embedding-004 deprecated Jan 14 2026) |
+| **Fixed** | Embedding dimensions: 768 fixed → 768 via MRL (`output_dimensionality=768`, default is 3072) |
+| **Fixed** | Fallback model: `Qwen3.5 397b` → `qwen/qwen3-32b` (Qwen3.5 397B does not exist on Groq) |
+| **Fixed** | FALLBACK_CONFIG model string updated to correct Groq model ID |
+| **Added** | CRITICAL SSE warning in Deployment Architecture — Cloudflare Tunnel buffers GET-based SSE (GitHub #1449, unresolved) |
+| **Added** | Groq Preview status warning — Qwen models can be deprecated without notice |

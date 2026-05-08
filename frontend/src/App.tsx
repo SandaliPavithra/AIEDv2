@@ -27,7 +27,7 @@ function WhatIsFraktureScroll({ containerRef }: { containerRef: React.RefObject<
   });
 
   const titleSize = useTransform(smoothProgress, [0, 0.4, 0.8], ["clamp(48px, 9vw, 128px)", "clamp(32px, 5vw, 64px)", "clamp(18px, 2vw, 24px)"]);
-  const titleX = useTransform(smoothProgress, [0.3, 0.8], ["0%", "-25vw"]);
+  const titleX = useTransform(smoothProgress, [0.3, 0.8], ["0%", "-20vw"]);
   const titleY = useTransform(smoothProgress, [0.3, 0.8], ["0%", "-42vh"]);
   const titleOpacity = useTransform(smoothProgress, [0, 0.1, 0.18, 0.7, 0.9], [0, 0, 1, 1, 0.5]);
 
