@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import Annotated
 
@@ -94,11 +95,11 @@ async def _generate_session_questions(
                    difficulty, expected_concepts, expected_time_seconds,
                    citation_book, citation_author, citation_chapter,
                    citation_page_start, citation_page_end, model_used, created_at)
-                VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now())
+                VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,now())
                 """,
                 session_id, chunk["id"], chunk.get("topic_id"),
                 q["question_text"], q["question_type"], difficulty,
-                q["expected_concepts"], q["expected_time_seconds"],
+                json.dumps(q["expected_concepts"]), q["expected_time_seconds"],
                 chunk.get("book_title"), chunk.get("book_author"), chunk.get("chapter"),
                 chunk.get("page_start"), chunk.get("page_end"),
                 "claude-haiku-4-5-20251001",

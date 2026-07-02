@@ -1,16 +1,16 @@
 import json
 
-import anthropic
+from anthropic import AsyncAnthropicBedrockMantle
 
 from app.config import EVALUATION_CONFIG, SONNET_MODEL, settings
 
-_client: anthropic.AsyncAnthropic | None = None
+_client: AsyncAnthropicBedrockMantle | None = None
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
+def _get_client() -> AsyncAnthropicBedrockMantle:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        _client = AsyncAnthropicBedrockMantle(aws_region=settings.AWS_REGION)
     return _client
 
 

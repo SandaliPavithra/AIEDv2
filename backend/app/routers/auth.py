@@ -4,13 +4,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
+import httpx
 import msal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.auth import create_access_token, get_current_user
 from app.config import settings
-from app.database import get_pool
+from app.database import get_pool  # used by /callback
 from app.models.user import UserResponse
 
 router = APIRouter()
@@ -23,6 +24,78 @@ def _sha256(value: str) -> str:
 def _generate_display_name() -> str:
     suffix = secrets.token_hex(4)
     return f"user_{suffix}"
+
+
+def _supabase_base_url() -> str:
+    # SUPABASE_URL may include /rest/v1/ — strip it to get the project base URL
+    return settings.SUPABASE_URL.rstrip("/").replace("/rest/v1", "").rstrip("/")
+
+
+@router.post("/token")
+async def login(form: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    """Sign in with email + password via Supabase Auth, return a local JWT."""
+    base_url = _supabase_base_url()
+    auth_url = f"{base_url}/auth/v1/token?grant_type=password"
+    rest_url = f"{base_url}/rest/v1/users"
+
+    service_headers = {
+        "apikey": settings.SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # 1. Verify credentials against Supabase Auth
+        auth_resp = await client.post(
+            auth_url,
+            json={"email": form.username, "password": form.password},
+            headers={"apikey": settings.SUPABASE_KEY, "Content-Type": "application/json"},
+        )
+        if auth_resp.status_code != 200:
+            body = auth_resp.json()
+            detail = body.get("error_description") or body.get("msg") or "Invalid credentials"
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
+        supabase_user = auth_resp.json()["user"]
+        supabase_uid = supabase_user["id"]
+        email = supabase_user.get("email", "")
+        email_hash = _sha256(email.lower())
+
+        # 2. Look up the user in the app users table via Supabase REST API
+        check_resp = await client.get(
+            rest_url,
+            params={"entra_id": f"eq.{supabase_uid}", "select": "id,role,is_active"},
+            headers=service_headers,
+        )
+        rows = check_resp.json() if check_resp.status_code == 200 else []
+
+        if not rows:
+            # New user — insert into app users table
+            user_id = str(uuid.uuid4())
+            display_name = _generate_display_name()
+            await client.post(
+                rest_url,
+                json={
+                    "id": user_id,
+                    "display_name": display_name,
+                    "email_hash": email_hash,
+                    "password_hash": "",
+                    "entra_id": supabase_uid,
+                    "role": "student",
+                    "is_active": True,
+                },
+                headers={**service_headers, "Prefer": "return=minimal"},
+            )
+            role = "student"
+        else:
+            row = rows[0]
+            if not row["is_active"]:
+                raise HTTPException(status_code=403, detail="Account disabled")
+            user_id = str(row["id"])
+            role = row["role"]
+
+    token = create_access_token(user_id, role)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @router.post("/callback")

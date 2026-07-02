@@ -9,7 +9,11 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = ""
     DATABASE_URL: str = ""
 
-    ANTHROPIC_API_KEY: str = ""
+    # AWS Bedrock credentials
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION: str = "us-east-1"
+
     GOOGLE_API_KEY: str = ""
     XAI_API_KEY: str = ""
 
@@ -57,8 +61,8 @@ EXPECTED_TIME_SECONDS: dict[tuple[str, str], int] = {
     ("long_answer", "hard"):   480,
 }
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
-SONNET_MODEL = "claude-sonnet-4-6"
+HAIKU_MODEL = "anthropic.claude-haiku-4-5"
+SONNET_MODEL = "anthropic.claude-sonnet-4-6"
 GROK_MODEL = "grok-2-latest"
 EMBEDDING_MODEL = "models/text-embedding-004"
 EMBEDDING_DIMENSIONS = 768

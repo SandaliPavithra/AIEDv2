@@ -1,11 +1,10 @@
 import io
 import uuid
-from typing import BinaryIO
 
 import asyncpg
-import google.generativeai as genai
 import pdfplumber
 import tiktoken
+from google import genai as google_genai
 
 from app.config import (
     CHUNK_OVERLAP_TOKENS,
@@ -15,33 +14,74 @@ from app.config import (
 )
 from app.database import get_supabase
 
-genai.configure(api_key=settings.GOOGLE_API_KEY)
 _enc = tiktoken.get_encoding("cl100k_base")
+_google_client: google_genai.Client | None = None
+
+
+def _get_google_client() -> google_genai.Client:
+    global _google_client
+    if _google_client is None:
+        _google_client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
+    return _google_client
 
 
 def _token_count(text: str) -> int:
     return len(_enc.encode(text))
 
 
-def _chunk_text(text: str) -> list[str]:
+def _chunk_text(text: str) -> list[tuple[int, int, str]]:
+    """Return list of (token_start, token_end, chunk_text) tuples."""
     tokens = _enc.encode(text)
-    chunks: list[str] = []
+    chunks: list[tuple[int, int, str]] = []
     start = 0
     while start < len(tokens):
         end = min(start + CHUNK_TARGET_TOKENS, len(tokens))
         chunk_tokens = tokens[start:end]
-        chunks.append(_enc.decode(chunk_tokens))
+        chunks.append((start, end, _enc.decode(chunk_tokens)))
+        if end == len(tokens):
+            break
         start += CHUNK_TARGET_TOKENS - CHUNK_OVERLAP_TOKENS
     return chunks
 
 
 async def _embed(text: str) -> list[float]:
-    result = genai.embed_content(
+    client = _get_google_client()
+    result = client.models.embed_content(
         model=EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_document",
+        contents=text,
+        config={"task_type": "RETRIEVAL_DOCUMENT"},
     )
-    return result["embedding"]
+    return list(result.embeddings[0].values)
+
+
+def _extract_structure(pages: list[tuple[int, str]]) -> list[tuple[int, str, str]]:
+    """
+    Heuristically detect chapter/section headings per page.
+    Returns list of (page_num, chapter, section).
+    A line is treated as a heading if it is:
+      - Short (≤ 80 chars), title-cased or ALL CAPS
+      - Does not end with punctuation
+    """
+    result = []
+    current_chapter = ""
+    current_section = ""
+    for page_num, text in pages:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or len(stripped) > 80:
+                continue
+            if stripped.endswith((".", ",", ";")):
+                continue
+            if stripped.isupper() or stripped.istitle():
+                words = stripped.split()
+                if len(words) <= 8:
+                    if any(kw in stripped.lower() for kw in ("chapter", "part", "unit", "module")):
+                        current_chapter = stripped
+                        current_section = ""
+                    else:
+                        current_section = stripped
+        result.append((page_num, current_chapter, current_section))
+    return result
 
 
 async def ingest_document(
@@ -63,62 +103,61 @@ async def ingest_document(
             storage_key
         )
 
-        chunks_data: list[dict] = []
+        page_texts: list[tuple[int, str]] = []
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             total_pages = len(pdf.pages)
-            current_text = ""
-            current_page_start = 1
-            current_chapter = ""
-            current_section = ""
-
-            page_texts: list[tuple[int, str]] = []
             for i, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text() or ""
                 page_texts.append((i, text))
 
-            full_text = "\n".join(t for _, t in page_texts)
-            raw_chunks = _chunk_text(full_text)
+        page_structure = _extract_structure(page_texts)
+        # Map: page_num → (chapter, section)
+        page_meta: dict[int, tuple[str, str]] = {
+            pn: (ch, sec) for pn, ch, sec in page_structure
+        }
 
-            # Map chunks back to approximate page numbers
-            char_offset = 0
-            page_char_offsets: list[tuple[int, int]] = []
-            running = 0
-            for page_num, pt in page_texts:
-                page_char_offsets.append((page_num, running))
-                running += len(pt) + 1
+        full_text = "\n".join(t for _, t in page_texts)
+        tokens_full = _enc.encode(full_text)
+        total_tokens = len(tokens_full)
 
-            full_text_chars = len(full_text)
-            chunk_char_start = 0
-            for idx, chunk in enumerate(raw_chunks):
-                chunk_len = len(chunk)
-                chunk_char_end = chunk_char_start + chunk_len
+        # Build page boundary token offsets
+        page_token_starts: list[tuple[int, int]] = []
+        running = 0
+        for page_num, pt in page_texts:
+            page_token_starts.append((page_num, running))
+            running += len(_enc.encode(pt)) + 1  # +1 for the newline separator
 
-                # Find page range
-                page_start = 1
-                page_end = total_pages
-                for pnum, poff in page_char_offsets:
-                    if poff <= chunk_char_start:
-                        page_start = pnum
-                    if poff <= chunk_char_end:
-                        page_end = pnum
+        raw_chunks = _chunk_text(full_text)
 
-                embedding = await _embed(chunk)
-                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+        chunks_data: list[dict] = []
+        for idx, (tok_start, tok_end, chunk_text) in enumerate(raw_chunks):
+            # Map token range → page range
+            page_start = page_token_starts[0][0]
+            page_end = page_token_starts[0][0]
+            for pnum, ptok in page_token_starts:
+                if ptok <= tok_start:
+                    page_start = pnum
+                if ptok <= tok_end:
+                    page_end = pnum
 
-                chunks_data.append({
-                    "id": str(uuid.uuid4()),
-                    "document_id": str(document_id),
-                    "topic_id": str(topic_id) if topic_id else None,
-                    "chunk_index": idx,
-                    "content": chunk,
-                    "page_start": page_start,
-                    "page_end": page_end,
-                    "chapter": "",
-                    "section": "",
-                    "difficulty": difficulty,
-                    "embedding": embedding_str,
-                })
-                chunk_char_start += CHUNK_TARGET_TOKENS * 3 - CHUNK_OVERLAP_TOKENS * 3
+            chapter, section = page_meta.get(page_start, ("", ""))
+
+            embedding = await _embed(chunk_text)
+            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+
+            chunks_data.append({
+                "id": str(uuid.uuid4()),
+                "document_id": str(document_id),
+                "topic_id": str(topic_id) if topic_id else None,
+                "chunk_index": idx,
+                "content": chunk_text,
+                "page_start": page_start,
+                "page_end": page_end,
+                "chapter": chapter,
+                "section": section,
+                "difficulty": difficulty,
+                "embedding": embedding_str,
+            })
 
         async with pool.acquire() as conn:
             async with conn.transaction():

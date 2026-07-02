@@ -1,9 +1,17 @@
 import asyncpg
-import google.generativeai as genai
+from google import genai as google_genai
 
-from app.config import EMBEDDING_MODEL, settings
+from app.config import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, settings
 
-genai.configure(api_key=settings.GOOGLE_API_KEY)
+_client: google_genai.Client | None = None
+
+
+def _get_client() -> google_genai.Client:
+    global _client
+    if _client is None:
+        _client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
+    return _client
+
 
 HYBRID_SEARCH_SQL = """
 SELECT
@@ -33,12 +41,13 @@ LIMIT $4;
 
 
 async def embed_text(text: str) -> list[float]:
-    result = genai.embed_content(
+    client = _get_client()
+    result = client.models.embed_content(
         model=EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_query",
+        contents=text,
+        config={"task_type": "RETRIEVAL_QUERY"},
     )
-    return result["embedding"]
+    return list(result.embeddings[0].values)
 
 
 async def hybrid_search(

@@ -8,7 +8,7 @@ from app.config import EVALUATION_CONFIG, SONNET_MODEL, settings
 from app.database import get_pool
 from app.models.progress import ChatMessageRequest, ChatMessageResponse, GoalResponse
 
-import anthropic
+from anthropic import AsyncAnthropicBedrockMantle
 
 router = APIRouter()
 
@@ -22,13 +22,13 @@ When you identify a clear goal, output it as a JSON block at the end of your res
 ```
 Only include the JSON block when a complete goal has been articulated."""
 
-_client: anthropic.AsyncAnthropic | None = None
+_client: AsyncAnthropicBedrockMantle | None = None
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
+def _get_client() -> AsyncAnthropicBedrockMantle:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        _client = AsyncAnthropicBedrockMantle(aws_region=settings.AWS_REGION)
     return _client
 
 

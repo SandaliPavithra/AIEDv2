@@ -6,13 +6,43 @@
 }
 
 :root {
-  background: #000;
+  /* Dark mode defaults */
+  --bg: #0a0a0a;
+  --header-bg: #111111;
+  --header-border: rgba(255, 255, 255, 0.08);
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.10);
+  --text: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.85);
+  --text-meta: rgba(255, 255, 255, 0.40);
+  --text-note: rgba(255, 255, 255, 0.35);
+  --btn-text: rgba(255, 255, 255, 0.60);
+  --btn-border: rgba(255, 255, 255, 0.15);
+  --moon-bite: #111111;
+
   color: white;
   overflow-x: hidden;
 }
 
+:root[data-theme="light"] {
+  --bg: #f0f0f0;
+  --header-bg: #e4e4e4;
+  --header-border: rgba(0, 0, 0, 0.08);
+  --card-bg: rgba(0, 0, 0, 0.04);
+  --card-border: rgba(0, 0, 0, 0.10);
+  --text: #0a0a0a;
+  --text-secondary: rgba(0, 0, 0, 0.80);
+  --text-meta: rgba(0, 0, 0, 0.45);
+  --text-note: rgba(0, 0, 0, 0.35);
+  --btn-text: rgba(0, 0, 0, 0.60);
+  --btn-border: rgba(0, 0, 0, 0.18);
+  --moon-bite: #e4e4e4;
+
+  background: var(--bg);
+  color: var(--text);
+}
+
 *, *::before, *::after {
-  cursor: none !important;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
@@ -25,4 +55,89 @@ body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--bg);
+  color: var(--text);
+  transition: background-color 0.35s ease, color 0.35s ease;
+}
+
+/* ── Morphing Theme Toggle ────────────────────────────────── */
+
+.theme-toggle {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  transition: transform 0.25s ease;
+  outline: none;
+}
+
+.theme-toggle:hover  { transform: scale(1.18); }
+.theme-toggle:active { transform: scale(0.88); }
+
+.toggle-orb {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  position: relative;
+  transition:
+    background-color 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow       0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    transform        0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Moon (dark mode) */
+[data-theme="dark"] .toggle-orb {
+  background-color: #dde3ed;
+  box-shadow: none;
+  transform: rotate(-30deg);
+}
+
+/* Sun (light mode) */
+[data-theme="light"] .toggle-orb {
+  background-color: #f59e0b;
+  transform: rotate(0deg);
+  box-shadow:
+     0   -11px 0 2px #f59e0b,
+     0    11px 0 2px #f59e0b,
+    -11px  0   0 2px #f59e0b,
+     11px  0   0 2px #f59e0b,
+    -8px  -8px 0 2px #f59e0b,
+     8px  -8px 0 2px #f59e0b,
+    -8px   8px 0 2px #f59e0b,
+     8px   8px 0 2px #f59e0b;
+}
+
+/* Crescent bite — shared base */
+.toggle-orb::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  transition:
+    background-color 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    transform        0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="dark"] .toggle-orb::after {
+  background-color: var(--moon-bite);
+  transform: scale(1);
+}
+
+[data-theme="light"] .toggle-orb::after {
+  background-color: transparent;
+  transform: scale(0);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
