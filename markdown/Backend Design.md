@@ -1,7 +1,59 @@
 # Official Backend Design — AI Education Platform
-**Version:** 3.0  
-**Last Updated:** April 2026  
+**Version:** 3.4  
+**Last Updated:** July 2026  
 **Status:** Approved for development
+
+---
+
+## Changelog
+
+### v3.4 — 2026-07-07
+
+| Change | Detail |
+|---|---|
+| **Replaced** | Embeddings: `gemini-embedding-001` (API, 1000/day free-tier quota) → local `BAAI/bge-base-en-v1.5` via `sentence-transformers` — native 768 dims, no rate limits, ~100-150x faster on this machine's GPU |
+| **Fixed** | `ingestion_status` could freeze at `processing` forever if the backend died mid-run, with nothing actually running — added startup reconciliation (any `pending`/`processing` row at cold boot is unconditionally stale) and a `409` guard against double-triggering retry |
+| **Reason** | A single large textbook approaches Gemini's free-tier daily embedding quota on its own; iterative dev usage compounds it further. A local model removes the constraint entirely rather than working around it (rejected: rotating multiple Google accounts for more quota — ToS risk, doesn't remove the ceiling, just raises it). |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
+
+### v3.3 — 2026-07-07
+
+| Change | Detail |
+|---|---|
+| **Replaced** | Embeddings: `text-embedding-004` (fully retired by Google) → `gemini-embedding-001`, truncated to 768 dims via `output_dimensionality` — no schema change needed |
+| **Added** | Retry-with-exponential-backoff on embedding calls (`app/services/embedding.py`, new, also de-duplicates the client boilerplate previously copy-pasted between `ingestion.py` and `rag.py`) — the free tier's per-minute quota is real and was killing ingestion runs on any book of meaningful size |
+| **Added** | Document upload dashboard (`/upload`, admin-only) + admin document endpoints (`GET /documents/admin`, `GET /documents/{id}`, `POST /documents/{id}/retry`) |
+| **Added** | Live backend log streaming — `GET /logs/stream` (SSE, admin-only) plus an in-memory broadcast handler (`app/log_stream.py`) wired into the existing structured logger. Frontend renders it as a devtools-style persistent left-docked panel (`AppShell` + `LiveLogSidebar`) that survives route navigation. |
+| **Fixed** | `get_supabase()` was building a malformed Storage URL (double path through `/rest/v1/`), causing every Storage operation to 404 against the wrong subsystem — see `TECHNICAL_LOG.md` |
+| **Fixed** | CORS-masking on unhandled exceptions, for real this time — the catch-all handler now attaches CORS headers by hand, since Starlette hoists bare-`Exception` handlers outside `CORSMiddleware` entirely (no middleware reordering can fix that) |
+| **Fixed** | Ingestion retries duplicated already-succeeded chunks (no unique constraint on `document_id, chunk_index`) — `ingest_document` now clears existing chunks for the document before (re-)starting |
+| **Reason** | The ingestion pipeline had never been exercised with a real document before this session — auth and quiz flows don't touch Storage or the embedding API at all. Four independent, previously-undetected bugs surfaced from a single real upload. |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
+
+### v3.2 — 2026-07-06
+
+| Change | Detail |
+|---|---|
+| **Removed** | `asyncpg` / `DATABASE_URL` — no direct Postgres connection anywhere in the backend anymore |
+| **Added** | `INSTEAD OF INSERT/UPDATE` triggers on all 7 encrypted-column `*_decrypted` views (`decrypted_view_writes_and_rpc.sql`) — completes the encrypt-on-write half of the pattern that only had encrypt-on-read (the views) before |
+| **Added** | 5 Postgres RPC functions for SQL that PostgREST's REST filters can't express (pgvector hybrid search, full-text chunk ranking, multi-table score/progress aggregates, atomic document-access counters) |
+| **Replaced** | Every router/service now talks to Supabase exclusively via REST (`backend/app/supabase_rest.py`) — same access pattern as the encrypted-PII design in the other (invoice OCR) project this schema was modeled on |
+| **Reason** | The DB access layer had drifted into two patterns (`asyncpg` direct SQL for most routes, REST for auth) for no functional reason — encrypted-column writes only ever needed *some* SQL to run inside Postgres (the vault key isn't REST-reachable), not a persistent app-side connection. Consolidating onto REST + triggers + RPC removes the second connection type and its own credential (`DATABASE_URL`) entirely. |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
+
+### v3.1 — 2026-07-03
+
+| Change | Detail |
+|---|---|
+| **Replaced** | Question generation: Claude Haiku 4.5 (via AWS Bedrock) → Gemini 2.5 Flash (free tier) |
+| **Replaced** | Evaluation + goal chatbot: Claude Sonnet 4.6 (via AWS Bedrock) → Gemini 2.5 Flash (free tier) |
+| **Reason** | Generation/evaluation were running on employer-billed AWS Bedrock credentials for a personal project. Switched to a free, personal-account provider to remove all shared billing surface. Plan is to switch back to Claude once self-funded. |
+| **Note** | Mentions of "Haiku"/"Sonnet" elsewhere in this document (Scoring Model, Database Tables) are left as historical/descriptive text and were not individually rewritten — the live model is tracked in `backend/app/config.py`'s `GEMINI_MODEL` constant. |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
 
 ---
 
@@ -13,9 +65,9 @@
 | Vector store | pgvector extension within Supabase |
 | File storage | Supabase Storage (PDFs) |
 | Search strategy | Hybrid — pgvector (semantic 60%) + PostgreSQL FTS (keyword 40%) |
-| Embeddings | Google `text-embedding-004` (768 dimensions) |
-| Question generation | Claude Haiku 4.5 |
-| Evaluation + scoring | Claude Sonnet 4.6 |
+| Embeddings | Local `BAAI/bge-base-en-v1.5` via `sentence-transformers`, native 768 dimensions *(was Google `gemini-embedding-001` — moved off entirely after repeatedly hitting its 1000/day free-tier quota; before that, `text-embedding-004`, retired by Google)* |
+| Question generation | Gemini 2.5 Flash *(was Claude Haiku 4.5)* |
+| Evaluation + scoring | Gemini 2.5 Flash *(was Claude Sonnet 4.6)* |
 | Hallucination checker | xAI Grok |
 | Auth / 2FA | Microsoft Entra ID |
 | Backend | FastAPI (Python) |
@@ -37,7 +89,7 @@
 
 These settings are centralised in a single backend config. Never hardcode them inside individual API calls. If values need tuning after real usage data is collected, change them in one place only.
 
-### Question Generation (Claude Haiku 4.5)
+### Question Generation (Gemini 2.5 Flash)
 
 Temperature controls question creativity and variety. Top P controls vocabulary conservatism. Both increase with difficulty so harder questions are more varied and conceptually demanding.
 
@@ -48,7 +100,7 @@ Temperature controls question creativity and variety. Top P controls vocabulary 
 | Hard | 0.7 | 0.95 | Higher creativity — complex multi-concept questions, edge cases |
 | Mixed | 0.5 | 0.90 | Defaults to medium as baseline |
 
-### Evaluation (Claude Sonnet 4.6)
+### Evaluation (Gemini 2.5 Flash)
 
 Evaluation temperature is fixed across all difficulties. The scoring rubric does not change based on difficulty — only the expected concepts differ. Consistent temperature guarantees that two students giving identical answers always receive identical scores. Changing evaluation temperature by difficulty would introduce scoring variance that undermines trust in the system.
 
@@ -404,7 +456,7 @@ Core RAG table. One row per chunk with embedding, FTS vector, and full citation 
 | `chapter` | `varchar(255)` | Chapter title, extracted during ingestion |
 | `section` | `varchar(255)` | Section heading, extracted during ingestion |
 | `difficulty` | `varchar(20)` | Inherited from document or AI-tagged per chunk |
-| `embedding` | `vector(768)` | Google `text-embedding-004` output |
+| `embedding` | `vector(768)` | Local `BAAI/bge-base-en-v1.5` output, native 768 dims *(was Google `gemini-embedding-001`/`text-embedding-004` — see Tech Stack table)* |
 | `fts_vector` | `tsvector` | PostgreSQL FTS vector, auto-populated via trigger |
 | `created_at` | `timestamptz` | |
 

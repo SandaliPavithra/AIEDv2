@@ -13,6 +13,7 @@ class QuestionResponse(BaseModel):
     question_text: str
     question_type: str
     difficulty: str
+    options: list[str] | None = None
     expected_concepts: list[str]
     expected_time_seconds: int
     citation_book: str | None = None

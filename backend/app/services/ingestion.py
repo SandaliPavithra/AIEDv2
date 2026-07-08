@@ -1,28 +1,17 @@
+import asyncio
 import io
 import uuid
 
-import asyncpg
 import pdfplumber
 import tiktoken
-from google import genai as google_genai
 
-from app.config import (
-    CHUNK_OVERLAP_TOKENS,
-    CHUNK_TARGET_TOKENS,
-    EMBEDDING_MODEL,
-    settings,
-)
+from app.config import CHUNK_OVERLAP_TOKENS, CHUNK_TARGET_TOKENS, settings
 from app.database import get_supabase
+from app.logging_config import logger
+from app.services.embedding import embed
+from app.supabase_rest import rest_get, rest_patch, rest_post
 
 _enc = tiktoken.get_encoding("cl100k_base")
-_google_client: google_genai.Client | None = None
-
-
-def _get_google_client() -> google_genai.Client:
-    global _google_client
-    if _google_client is None:
-        _google_client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
-    return _google_client
 
 
 def _token_count(text: str) -> int:
@@ -42,16 +31,6 @@ def _chunk_text(text: str) -> list[tuple[int, int, str]]:
             break
         start += CHUNK_TARGET_TOKENS - CHUNK_OVERLAP_TOKENS
     return chunks
-
-
-async def _embed(text: str) -> list[float]:
-    client = _get_google_client()
-    result = client.models.embed_content(
-        model=EMBEDDING_MODEL,
-        contents=text,
-        config={"task_type": "RETRIEVAL_DOCUMENT"},
-    )
-    return list(result.embeddings[0].values)
 
 
 def _extract_structure(pages: list[tuple[int, str]]) -> list[tuple[int, str, str]]:
@@ -84,53 +63,86 @@ def _extract_structure(pages: list[tuple[int, str]]) -> list[tuple[int, str, str
     return result
 
 
+def _download_and_prepare_chunks(
+    storage_key: str,
+) -> tuple[int, dict[int, tuple[str, str]], list[tuple[int, int]], list[tuple[int, int, str]]]:
+    """All CPU/IO-bound synchronous work for one document: Storage download,
+    PDF text extraction, chapter/section detection, and tokenizing/chunking.
+    Called via asyncio.to_thread — on a large textbook this alone can take
+    well over a minute, and none of it has anything to await, so run directly
+    on the event loop it would block every other request on the server for
+    that whole time (confirmed live: this was a real, repeated cause of the
+    backend appearing to freeze during ingestion)."""
+    supabase = get_supabase()
+    logger.info("[ingestion.py] Downloading %s from bucket %s", storage_key, settings.SUPABASE_STORAGE_BUCKET)
+    file_bytes = supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).download(storage_key)
+    logger.info("[ingestion.py] Downloaded %d bytes, extracting text page by page", len(file_bytes))
+
+    page_texts: list[tuple[int, str]] = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        total_pages = len(pdf.pages)
+        for i, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            page_texts.append((i, text))
+            if i % 25 == 0 or i == total_pages:
+                logger.info("[ingestion.py] Extracted text from page %d/%d", i, total_pages)
+
+    logger.info("[ingestion.py] Detecting chapter/section structure across %d pages", total_pages)
+    page_structure = _extract_structure(page_texts)
+    # Map: page_num → (chapter, section)
+    page_meta: dict[int, tuple[str, str]] = {pn: (ch, sec) for pn, ch, sec in page_structure}
+
+    full_text = "\n".join(t for _, t in page_texts)
+    total_tokens = len(_enc.encode(full_text))
+
+    # Build page boundary token offsets
+    page_token_starts: list[tuple[int, int]] = []
+    running = 0
+    for page_num, pt in page_texts:
+        page_token_starts.append((page_num, running))
+        running += len(_enc.encode(pt)) + 1  # +1 for the newline separator
+
+    raw_chunks = _chunk_text(full_text)
+    logger.info(
+        "[ingestion.py] Chunking complete: %d tokens -> %d chunks (target=%d, overlap=%d)",
+        total_tokens, len(raw_chunks), CHUNK_TARGET_TOKENS, CHUNK_OVERLAP_TOKENS,
+    )
+    return total_pages, page_meta, page_token_starts, raw_chunks
+
+
 async def ingest_document(
-    pool: asyncpg.Pool,
     document_id: uuid.UUID,
     storage_key: str,
     topic_id: uuid.UUID | None,
     difficulty: str,
 ) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE documents SET ingestion_status = 'processing' WHERE id = $1",
-            document_id,
-        )
+    logger.info("[ingestion.py] Starting ingestion for document %s (storage_key=%s)", document_id, storage_key)
+    await rest_patch("documents", params={"id": f"eq.{document_id}"}, json={"ingestion_status": "processing"})
 
     try:
-        supabase = get_supabase()
-        file_bytes = supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).download(
-            storage_key
+        # A previous attempt may have partially inserted chunks before failing
+        # (e.g. hitting the free-tier daily embedding quota mid-run). Resume
+        # rather than restart: re-embedding an already-successful chunk wastes
+        # a unit of the scarce resource (today's quota) for no reason. Skip
+        # any chunk_index already present instead of deleting and redoing them.
+        existing_rows = await rest_get(
+            "document_chunks", params={"document_id": f"eq.{document_id}", "select": "chunk_index"}
+        )
+        existing_indices = {r["chunk_index"] for r in existing_rows}
+        if existing_indices:
+            logger.info(
+                "[ingestion.py] Resuming: %d chunk(s) already ingested, skipping those", len(existing_indices)
+            )
+
+        total_pages, page_meta, page_token_starts, raw_chunks = await asyncio.to_thread(
+            _download_and_prepare_chunks, storage_key
         )
 
-        page_texts: list[tuple[int, str]] = []
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            total_pages = len(pdf.pages)
-            for i, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                page_texts.append((i, text))
-
-        page_structure = _extract_structure(page_texts)
-        # Map: page_num → (chapter, section)
-        page_meta: dict[int, tuple[str, str]] = {
-            pn: (ch, sec) for pn, ch, sec in page_structure
-        }
-
-        full_text = "\n".join(t for _, t in page_texts)
-        tokens_full = _enc.encode(full_text)
-        total_tokens = len(tokens_full)
-
-        # Build page boundary token offsets
-        page_token_starts: list[tuple[int, int]] = []
-        running = 0
-        for page_num, pt in page_texts:
-            page_token_starts.append((page_num, running))
-            running += len(_enc.encode(pt)) + 1  # +1 for the newline separator
-
-        raw_chunks = _chunk_text(full_text)
-
-        chunks_data: list[dict] = []
+        chunk_count = len(existing_indices)
         for idx, (tok_start, tok_end, chunk_text) in enumerate(raw_chunks):
+            if idx in existing_indices:
+                continue
+
             # Map token range → page range
             page_start = page_token_starts[0][0]
             page_end = page_token_starts[0][0]
@@ -142,53 +154,41 @@ async def ingest_document(
 
             chapter, section = page_meta.get(page_start, ("", ""))
 
-            embedding = await _embed(chunk_text)
+            logger.info(
+                "[ingestion.py] Embedding chunk %d/%d (pages %d-%d, chapter=%r)",
+                idx + 1, len(raw_chunks), page_start, page_end, chapter or None,
+            )
+            embedding = await embed(chunk_text, "RETRIEVAL_DOCUMENT")
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
-            chunks_data.append({
-                "id": str(uuid.uuid4()),
-                "document_id": str(document_id),
-                "topic_id": str(topic_id) if topic_id else None,
-                "chunk_index": idx,
-                "content": chunk_text,
-                "page_start": page_start,
-                "page_end": page_end,
-                "chapter": chapter,
-                "section": section,
-                "difficulty": difficulty,
-                "embedding": embedding_str,
-            })
+            await rest_post(
+                "document_chunks",
+                json={
+                    "document_id": str(document_id),
+                    "topic_id": str(topic_id) if topic_id else None,
+                    "chunk_index": idx,
+                    "content": chunk_text,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "chapter": chapter,
+                    "section": section,
+                    "difficulty": difficulty,
+                    "embedding": embedding_str,
+                },
+            )
+            chunk_count += 1
 
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for c in chunks_data:
-                    await conn.execute(
-                        """
-                        INSERT INTO document_chunks
-                          (id, document_id, topic_id, chunk_index, content,
-                           page_start, page_end, chapter, section, difficulty, embedding)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::vector)
-                        """,
-                        c["id"], c["document_id"], c["topic_id"], c["chunk_index"],
-                        c["content"], c["page_start"], c["page_end"],
-                        c["chapter"], c["section"], c["difficulty"], c["embedding"],
-                    )
-
-                await conn.execute(
-                    """
-                    UPDATE documents
-                    SET ingestion_status = 'complete',
-                        total_pages = $2,
-                        total_chunks = $3
-                    WHERE id = $1
-                    """,
-                    str(document_id), total_pages, len(chunks_data),
-                )
+        await rest_patch(
+            "documents",
+            params={"id": f"eq.{document_id}"},
+            json={"ingestion_status": "complete", "total_pages": total_pages, "total_chunks": chunk_count},
+        )
+        logger.info(
+            "[ingestion.py] Ingestion complete for document %s: %d pages, %d chunks",
+            document_id, total_pages, chunk_count,
+        )
 
     except Exception as exc:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE documents SET ingestion_status = 'failed' WHERE id = $1",
-                document_id,
-            )
+        logger.exception("[ingestion.py] Ingestion FAILED for document %s", document_id)
+        await rest_patch("documents", params={"id": f"eq.{document_id}"}, json={"ingestion_status": "failed"})
         raise exc

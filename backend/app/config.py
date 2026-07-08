@@ -7,14 +7,8 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_KEY: str = ""
     SUPABASE_SERVICE_KEY: str = ""
-    DATABASE_URL: str = ""
 
-    # AWS Bedrock credentials
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_REGION: str = "us-east-1"
-
-    GOOGLE_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
     XAI_API_KEY: str = ""
 
     ENTRA_TENANT_ID: str = ""
@@ -61,10 +55,18 @@ EXPECTED_TIME_SECONDS: dict[tuple[str, str], int] = {
     ("long_answer", "hard"):   480,
 }
 
-HAIKU_MODEL = "anthropic.claude-haiku-4-5"
-SONNET_MODEL = "anthropic.claude-sonnet-4-6"
+# Question generation + goal chatbot: cheap, structured-output tasks.
+CLAUDE_GENERATION_MODEL = "claude-haiku-4-5"
+CLAUDE_CHATBOT_MODEL = "claude-haiku-4-5"
+# Evaluation: judging conceptual-vs-expression errors and comparative
+# correctness needs more reasoning headroom than Haiku reliably gives.
+CLAUDE_EVALUATION_MODEL = "claude-sonnet-5"
 GROK_MODEL = "grok-2-latest"
-EMBEDDING_MODEL = "models/text-embedding-004"
+# Local, open-source, no rate limits — replaced gemini-embedding-001 after
+# repeatedly hitting its free-tier 1000/day cap mid-ingestion. Native 768-dim
+# output, exact match for the schema's VECTOR(768) columns, no truncation
+# needed. See TECHNICAL_LOG.md.
+EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 EMBEDDING_DIMENSIONS = 768
 
 CHUNK_TARGET_TOKENS = 900

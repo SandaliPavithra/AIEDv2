@@ -3,12 +3,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from app.auth import get_current_user
-from app.config import EVALUATION_CONFIG, SONNET_MODEL, settings
-from app.database import get_pool
-from app.models.progress import ChatMessageRequest, ChatMessageResponse, GoalResponse
+from anthropic import AsyncAnthropic
 
-from anthropic import AsyncAnthropicBedrockMantle
+from app.auth import get_current_user
+from app.config import CLAUDE_CHATBOT_MODEL, settings
+from app.models.progress import ChatMessageRequest, ChatMessageResponse, GoalResponse
+from app.supabase_rest import rest_get, rest_post
 
 router = APIRouter()
 
@@ -22,41 +22,31 @@ When you identify a clear goal, output it as a JSON block at the end of your res
 ```
 Only include the JSON block when a complete goal has been articulated."""
 
-_client: AsyncAnthropicBedrockMantle | None = None
+_client: AsyncAnthropic | None = None
 
 
-def _get_client() -> AsyncAnthropicBedrockMantle:
+def _get_client() -> AsyncAnthropic:
     global _client
     if _client is None:
-        _client = AsyncAnthropicBedrockMantle(aws_region=settings.AWS_REGION)
+        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     return _client
 
 
 @router.get("/", response_model=list[GoalResponse])
 async def list_goals(user: Annotated[dict, Depends(get_current_user)]):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM student_goals WHERE user_id = $1 AND status = 'active' ORDER BY created_at DESC",
-            user["id"],
-        )
-    result = []
-    for r in rows:
-        d = dict(r)
-        if isinstance(d.get("goal_structured"), str):
-            d["goal_structured"] = json.loads(d["goal_structured"])
-        result.append(GoalResponse(**d))
-    return result
+    rows = await rest_get(
+        "student_goals_decrypted",
+        params={"user_id": f"eq.{user['id']}", "status": "eq.active", "order": "created_at.desc"},
+    )
+    return [GoalResponse(**r) for r in rows]
 
 
 @router.get("/history", response_model=list[ChatMessageResponse])
 async def chat_history(user: Annotated[dict, Depends(get_current_user)]):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT role, content FROM goal_chat_history WHERE user_id = $1 ORDER BY created_at",
-            user["id"],
-        )
+    rows = await rest_get(
+        "goal_chat_history_decrypted",
+        params={"user_id": f"eq.{user['id']}", "order": "created_at.asc", "select": "role,content"},
+    )
     return [ChatMessageResponse(role=r["role"], content=r["content"]) for r in rows]
 
 
@@ -65,59 +55,50 @@ async def chat(
     req: ChatMessageRequest,
     user: Annotated[dict, Depends(get_current_user)],
 ):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        history_rows = await conn.fetch(
-            "SELECT role, content FROM goal_chat_history WHERE user_id = $1 ORDER BY created_at",
-            user["id"],
-        )
+    history_rows = await rest_get(
+        "goal_chat_history_decrypted",
+        params={"user_id": f"eq.{user['id']}", "order": "created_at.asc", "select": "role,content"},
+    )
 
     messages = [{"role": r["role"], "content": r["content"]} for r in history_rows]
     messages.append({"role": "user", "content": req.content})
 
     client = _get_client()
     response = await client.messages.create(
-        model=SONNET_MODEL,
+        model=CLAUDE_CHATBOT_MODEL,
         max_tokens=512,
+        system=GOAL_SYSTEM_PROMPT,
         temperature=0.7,
-        system=[
-            {
-                "type": "text",
-                "text": GOAL_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
         messages=messages,
     )
 
-    assistant_text = response.content[0].text
+    assistant_text = next(block.text for block in response.content if block.type == "text")
 
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO goal_chat_history (id, user_id, role, content, created_at) VALUES (gen_random_uuid(),$1,'user',$2,now())",
-            user["id"], req.content,
-        )
-        await conn.execute(
-            "INSERT INTO goal_chat_history (id, user_id, role, content, created_at) VALUES (gen_random_uuid(),$1,'assistant',$2,now())",
-            user["id"], assistant_text,
-        )
+    # Plaintext in — goal_chat_history_decrypted's INSTEAD OF INSERT trigger
+    # encrypts content. Bulk insert: the trigger fires once per row (FOR EACH ROW).
+    await rest_post(
+        "goal_chat_history_decrypted",
+        json=[
+            {"user_id": str(user["id"]), "role": "user", "content": req.content},
+            {"user_id": str(user["id"]), "role": "assistant", "content": assistant_text},
+        ],
+    )
 
-        # Extract goal if present
-        if "```goal" in assistant_text:
-            try:
-                goal_json_str = assistant_text.split("```goal")[1].split("```")[0].strip()
-                goal_data = json.loads(goal_json_str)
-                await conn.execute(
-                    """
-                    INSERT INTO student_goals
-                      (id, user_id, goal_text, goal_structured, status, created_at, updated_at)
-                    VALUES (gen_random_uuid(),$1,$2,$3::jsonb,'active',now(),now())
-                    """,
-                    user["id"],
-                    f"Goal: {goal_data.get('topic', '')} — target {goal_data.get('target_score', '')}",
-                    json.dumps(goal_data),
-                )
-            except (json.JSONDecodeError, IndexError):
-                pass
+    # Extract goal if present
+    if "```goal" in assistant_text:
+        try:
+            goal_json_str = assistant_text.split("```goal")[1].split("```")[0].strip()
+            goal_data = json.loads(goal_json_str)
+            await rest_post(
+                "student_goals_decrypted",
+                json={
+                    "user_id": str(user["id"]),
+                    "goal_text": f"Goal: {goal_data.get('topic', '')} — target {goal_data.get('target_score', '')}",
+                    "goal_structured": goal_data,
+                    "status": "active",
+                },
+            )
+        except (json.JSONDecodeError, IndexError):
+            pass
 
     return ChatMessageResponse(role="assistant", content=assistant_text)

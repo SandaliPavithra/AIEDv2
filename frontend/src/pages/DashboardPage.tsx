@@ -85,7 +85,14 @@ export default function DashboardPage() {
           {user ? (
             <>
               <p style={styles.meta}>Role: {user.role} &nbsp;|&nbsp; ID: {user.id}</p>
-              <p style={styles.note}>Backend is connected. More features coming soon.</p>
+              <button style={styles.generateBtn} onClick={() => navigate('/generate')}>
+                Start a quiz
+              </button>
+              {user.role === 'admin' && (
+                <button style={styles.uploadBtn} onClick={() => navigate('/upload')}>
+                  Upload a book
+                </button>
+              )}
             </>
           ) : (
             <p style={styles.text}>Loading…</p>
@@ -130,6 +137,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   main: {
     display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 'calc(100vh - 64px)',
@@ -170,6 +178,28 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-note)',
     margin: 0,
     marginTop: 8,
+  },
+  generateBtn: {
+    marginTop: 12,
+    padding: '12px',
+    background: 'var(--text)',
+    color: 'var(--bg)',
+    border: 'none',
+    borderRadius: 8,
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: 'pointer',
+  },
+  uploadBtn: {
+    marginTop: 8,
+    padding: '12px',
+    background: 'transparent',
+    color: 'var(--btn-text)',
+    border: '1px solid var(--btn-border)',
+    borderRadius: 8,
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: 'pointer',
   },
   logoutBtn: {
     padding: '8px 20px',

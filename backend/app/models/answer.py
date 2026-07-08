@@ -39,3 +39,5 @@ class BehaviourResponse(BaseModel):
     revision_count: int
     behaviour_label: str
     time_modifier: float
+    mouse_activity_count: int
+    option_hover_count: int

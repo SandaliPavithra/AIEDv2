@@ -15,6 +15,8 @@ def compute_behaviour(
             "revision_count": 0,
             "behaviour_label": "neutral",
             "time_modifier": 1.0,
+            "mouse_activity_count": 0,
+            "option_hover_count": 0,
         }
 
     events_sorted = sorted(events, key=lambda e: e["event_at"])
@@ -64,8 +66,11 @@ def compute_behaviour(
     else:
         answer_start_delay = 0
 
-    # Revision count: number of edit events
+    # Revision count: number of edit events (also covers MCQ selection changes)
     revision_count = sum(1 for e in events_sorted if e["event_type"] == "edit")
+
+    mouse_activity_count = sum(1 for e in events_sorted if e["event_type"] == "mouse_activity")
+    option_hover_count = sum(1 for e in events_sorted if e["event_type"] == "option_hover_start")
 
     distraction_ratio = round(blur_time / total_elapsed, 3) if total_elapsed > 0 else 0.0
 
@@ -102,4 +107,6 @@ def compute_behaviour(
         "revision_count": revision_count,
         "behaviour_label": label,
         "time_modifier": time_modifier,
+        "mouse_activity_count": mouse_activity_count,
+        "option_hover_count": option_hover_count,
     }

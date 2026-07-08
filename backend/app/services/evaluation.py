@@ -1,17 +1,37 @@
 import json
 
-from anthropic import AsyncAnthropicBedrockMantle
+from anthropic import AsyncAnthropic
 
-from app.config import EVALUATION_CONFIG, SONNET_MODEL, settings
+from app.config import CLAUDE_EVALUATION_MODEL, EVALUATION_CONFIG, settings
 
-_client: AsyncAnthropicBedrockMantle | None = None
+_client: AsyncAnthropic | None = None
 
 
-def _get_client() -> AsyncAnthropicBedrockMantle:
+def _get_client() -> AsyncAnthropic:
     global _client
     if _client is None:
-        _client = AsyncAnthropicBedrockMantle(aws_region=settings.AWS_REGION)
+        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     return _client
+
+
+EVALUATION_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "factual_correctness_score": {"type": "integer"},
+        "structure_score": {"type": "integer"},
+        "precision_score": {"type": "integer"},
+        "recall_score": {"type": "integer"},
+        "wording_score": {"type": "integer"},
+        "concepts_covered": {"type": "array", "items": {"type": "string"}},
+        "concepts_missed": {"type": "array", "items": {"type": "string"}},
+        "feedback_text": {"type": "string"},
+    },
+    "required": [
+        "factual_correctness_score", "structure_score", "precision_score", "recall_score",
+        "wording_score", "concepts_covered", "concepts_missed", "feedback_text",
+    ],
+    "additionalProperties": False,
+}
 
 
 EVALUATION_SYSTEM_PROMPT = """You are a rigorous but fair academic evaluator for an AI/ML education platform.
@@ -25,17 +45,7 @@ Scoring dimensions (all 0-100):
 - recall_score: What fraction of expected_concepts did the answer cover? (concepts_covered / total_expected)
 - wording_score: Bias-neutral clarity. Reward correct meaning regardless of writing style.
 
-Respond with ONLY valid JSON:
-{
-  "factual_correctness_score": 0-100,
-  "structure_score": 0-100,
-  "precision_score": 0-100,
-  "recall_score": 0-100,
-  "wording_score": 0-100,
-  "concepts_covered": ["concept1"],
-  "concepts_missed": ["concept2"],
-  "feedback_text": "Constructive feedback in 2-4 sentences."
-}"""
+feedback_text: constructive feedback in 2-4 sentences."""
 
 
 async def evaluate_answer(
@@ -55,23 +65,14 @@ async def evaluate_answer(
     )
 
     response = await client.messages.create(
-        model=SONNET_MODEL,
+        model=CLAUDE_EVALUATION_MODEL,
         max_tokens=1024,
+        system=EVALUATION_SYSTEM_PROMPT,
         temperature=EVALUATION_CONFIG["temperature"],
         top_p=EVALUATION_CONFIG["top_p"],
-        system=[
-            {
-                "type": "text",
-                "text": EVALUATION_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
+        output_config={"format": {"type": "json_schema", "schema": EVALUATION_OUTPUT_SCHEMA}},
         messages=[{"role": "user", "content": user_content}],
     )
 
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw)
+    text = next(block.text for block in response.content if block.type == "text")
+    return json.loads(text)

@@ -1,7 +1,6 @@
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timezone
 from typing import Annotated
 
 import httpx
@@ -11,8 +10,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from app.auth import create_access_token, get_current_user
 from app.config import settings
-from app.database import get_pool  # used by /callback
-from app.models.user import UserResponse
+from app.models.user import RegisterRequest, UserResponse
+from app.supabase_rest import rest_get_one, rest_post_one
 
 router = APIRouter()
 
@@ -31,68 +30,79 @@ def _supabase_base_url() -> str:
     return settings.SUPABASE_URL.rstrip("/").replace("/rest/v1", "").rstrip("/")
 
 
+async def _create_app_user(entra_id: str, email: str, display_name: str | None = None) -> dict:
+    email_hash = _sha256(email.lower())
+    return await rest_post_one(
+        "users",
+        json={
+            "id": str(uuid.uuid4()),
+            "display_name": display_name or _generate_display_name(),
+            "email_hash": email_hash,
+            "password_hash": "",
+            "entra_id": entra_id,
+            "role": "student",
+            "is_active": True,
+        },
+    )
+
+
+@router.post("/register")
+async def register(req: RegisterRequest):
+    """Create a Supabase Auth account, then the corresponding app user row, and return a local JWT."""
+    signup_url = f"{_supabase_base_url()}/auth/v1/signup"
+
+    async with httpx.AsyncClient() as client:
+        signup_resp = await client.post(
+            signup_url,
+            json={"email": req.email, "password": req.password},
+            headers={"apikey": settings.SUPABASE_KEY, "Content-Type": "application/json"},
+        )
+    if signup_resp.status_code not in (200, 201):
+        body = signup_resp.json()
+        detail = body.get("error_description") or body.get("msg") or "Registration failed"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    supabase_body = signup_resp.json()
+    supabase_user = supabase_body.get("user") or supabase_body
+    supabase_uid = supabase_user["id"]
+
+    user = await _create_app_user(supabase_uid, req.email, req.display_name)
+    token = create_access_token(user["id"], "student")
+    return {"access_token": token, "token_type": "bearer"}
+
+
 @router.post("/token")
 async def login(form: Annotated[OAuth2PasswordRequestForm, Depends()]):
     """Sign in with email + password via Supabase Auth, return a local JWT."""
-    base_url = _supabase_base_url()
-    auth_url = f"{base_url}/auth/v1/token?grant_type=password"
-    rest_url = f"{base_url}/rest/v1/users"
-
-    service_headers = {
-        "apikey": settings.SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
-        "Content-Type": "application/json",
-    }
+    auth_url = f"{_supabase_base_url()}/auth/v1/token?grant_type=password"
 
     async with httpx.AsyncClient() as client:
-        # 1. Verify credentials against Supabase Auth
         auth_resp = await client.post(
             auth_url,
             json={"email": form.username, "password": form.password},
             headers={"apikey": settings.SUPABASE_KEY, "Content-Type": "application/json"},
         )
-        if auth_resp.status_code != 200:
-            body = auth_resp.json()
-            detail = body.get("error_description") or body.get("msg") or "Invalid credentials"
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+    if auth_resp.status_code != 200:
+        body = auth_resp.json()
+        detail = body.get("error_description") or body.get("msg") or "Invalid credentials"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
-        supabase_user = auth_resp.json()["user"]
-        supabase_uid = supabase_user["id"]
-        email = supabase_user.get("email", "")
-        email_hash = _sha256(email.lower())
+    supabase_user = auth_resp.json()["user"]
+    supabase_uid = supabase_user["id"]
+    email = supabase_user.get("email", "")
 
-        # 2. Look up the user in the app users table via Supabase REST API
-        check_resp = await client.get(
-            rest_url,
-            params={"entra_id": f"eq.{supabase_uid}", "select": "id,role,is_active"},
-            headers=service_headers,
-        )
-        rows = check_resp.json() if check_resp.status_code == 200 else []
+    row = await rest_get_one(
+        "users",
+        params={"entra_id": f"eq.{supabase_uid}", "select": "id,role,is_active"},
+    )
 
-        if not rows:
-            # New user — insert into app users table
-            user_id = str(uuid.uuid4())
-            display_name = _generate_display_name()
-            await client.post(
-                rest_url,
-                json={
-                    "id": user_id,
-                    "display_name": display_name,
-                    "email_hash": email_hash,
-                    "password_hash": "",
-                    "entra_id": supabase_uid,
-                    "role": "student",
-                    "is_active": True,
-                },
-                headers={**service_headers, "Prefer": "return=minimal"},
-            )
-            role = "student"
-        else:
-            row = rows[0]
-            if not row["is_active"]:
-                raise HTTPException(status_code=403, detail="Account disabled")
-            user_id = str(row["id"])
-            role = row["role"]
+    if not row:
+        new_user = await _create_app_user(supabase_uid, email)
+        user_id, role = new_user["id"], "student"
+    else:
+        if not row["is_active"]:
+            raise HTTPException(status_code=403, detail="Account disabled")
+        user_id, role = str(row["id"]), row["role"]
 
     token = create_access_token(user_id, role)
     return {"access_token": token, "token_type": "bearer"}
@@ -121,29 +131,19 @@ async def entra_callback(request: Request):
     id_token_claims = result.get("id_token_claims", {})
     entra_id = id_token_claims.get("oid") or id_token_claims.get("sub")
     email = id_token_claims.get("preferred_username") or id_token_claims.get("email", "")
-    email_hash = _sha256(email.lower())
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, role, is_active FROM users WHERE entra_id = $1", entra_id
-        )
-        if row is None:
-            user_id = str(uuid.uuid4())
-            display_name = _generate_display_name()
-            await conn.execute(
-                """
-                INSERT INTO users (id, display_name, email_hash, password_hash, entra_id, role, created_at, is_active)
-                VALUES ($1, $2, $3, '', $4, 'student', now(), true)
-                """,
-                user_id, display_name, email_hash, entra_id,
-            )
-            role = "student"
-        else:
-            if not row["is_active"]:
-                raise HTTPException(status_code=403, detail="Account disabled")
-            user_id = str(row["id"])
-            role = row["role"]
+    row = await rest_get_one(
+        "users",
+        params={"entra_id": f"eq.{entra_id}", "select": "id,role,is_active"},
+    )
+
+    if row is None:
+        new_user = await _create_app_user(entra_id, email)
+        user_id, role = new_user["id"], "student"
+    else:
+        if not row["is_active"]:
+            raise HTTPException(status_code=403, detail="Account disabled")
+        user_id, role = str(row["id"]), row["role"]
 
     token = create_access_token(user_id, role)
     return {"access_token": token, "token_type": "bearer"}
