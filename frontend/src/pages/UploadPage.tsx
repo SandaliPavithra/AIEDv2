@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ThemeToggle from '../components/ThemeToggle';
 
 interface Topic {
   id: string;
@@ -37,7 +38,6 @@ function authHeaders() {
 
 export default function UploadPage() {
   const navigate = useNavigate();
-  const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') !== 'light');
   const [user, setUser] = useState<User | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
@@ -56,11 +56,6 @@ export default function UploadPage() {
   const [retryError, setRetryError] = useState<string | null>(null);
 
   const pollTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
-    localStorage.setItem('theme', isDark ? 'dark' : 'light');
-  }, [isDark]);
 
   useEffect(() => {
     if (!localStorage.getItem('access_token')) {
@@ -191,9 +186,7 @@ export default function UploadPage() {
       <header style={s.header}>
         <span style={s.headerTitle}>Upload Textbook</span>
         <div style={s.headerActions}>
-          <button className="theme-toggle" onClick={() => setIsDark((d) => !d)} aria-label="Toggle light / dark mode">
-            <span className="toggle-orb" />
-          </button>
+          <ThemeToggle />
           <button style={s.backBtn} onClick={() => navigate('/dashboard')}>Back to Dashboard</button>
         </div>
       </header>

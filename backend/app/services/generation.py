@@ -17,12 +17,23 @@ def _get_client() -> AsyncAnthropic:
 # additionalProperties:false requires every key in "required" — nullable
 # fields use a null-inclusive type instead of being omitted, since the two
 # response shapes (skip vs. real question) share one schema.
+#
+# question_type can't follow that same type-array pattern: Claude's schema
+# validator rejects combining an array `type` with `enum` on the same node
+# (confirmed live — "Enum value 'short_answer' does not match declared type
+# '['string', 'null']'", reproduced then fixed via a minimal probe script
+# before touching this file). `anyOf` is the form it actually accepts.
 GENERATION_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "skip": {"type": "boolean"},
         "question_text": {"type": ["string", "null"]},
-        "question_type": {"type": ["string", "null"], "enum": ["short_answer", "long_answer", "mcq", None]},
+        "question_type": {
+            "anyOf": [
+                {"type": "string", "enum": ["short_answer", "long_answer", "mcq"]},
+                {"type": "null"},
+            ]
+        },
         "options": {"type": ["array", "null"], "items": {"type": "string"}},
         "correct_index": {"type": ["integer", "null"]},
         "expected_concepts": {"type": ["array", "null"], "items": {"type": "string"}},
@@ -104,8 +115,11 @@ async def generate_question(
         model=CLAUDE_GENERATION_MODEL,
         max_tokens=1024,
         system=GENERATION_SYSTEM_PROMPT,
+        # Claude rejects temperature+top_p together ("cannot both be specified
+        # for this model") — confirmed live via a minimal probe. top_p stays
+        # in GENERATION_CONFIG and gets recorded on the session row for
+        # provenance; it's just not sent to the API call itself.
         temperature=config["temperature"],
-        top_p=config["top_p"],
         output_config={"format": {"type": "json_schema", "schema": GENERATION_OUTPUT_SCHEMA}},
         messages=[{"role": "user", "content": user_content}],
     )

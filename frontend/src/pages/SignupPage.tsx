@@ -1,5 +1,6 @@
 import { useState, FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import ThemeToggle from '../components/ThemeToggle';
 
 export default function SignupPage() {
   const navigate = useNavigate();
@@ -35,6 +36,9 @@ export default function SignupPage() {
 
   return (
     <div style={s.page} className="show-cursor">
+      <div style={{ position: 'fixed', top: 16, right: 16 }}>
+        <ThemeToggle />
+      </div>
       <form style={s.card} onSubmit={handleSubmit}>
         <h1 style={s.title}>Sign up</h1>
 
@@ -86,32 +90,34 @@ export default function SignupPage() {
 const s: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
-    background: '#111',
+    background: 'var(--bg)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontFamily: 'sans-serif',
     cursor: 'default',
+    transition: 'background 0.35s ease',
   },
   card: {
-    background: '#1a1a1a',
-    border: '1px solid #333',
+    background: 'var(--card-bg)',
+    border: '1px solid var(--card-border)',
     borderRadius: 12,
     padding: '36px 32px',
     width: 340,
     display: 'flex',
     flexDirection: 'column',
     gap: 10,
+    transition: 'background 0.35s ease, border-color 0.35s ease',
   },
-  title: { color: '#fff', fontSize: 22, fontWeight: 700, margin: '0 0 8px' },
-  label: { color: '#aaa', fontSize: 13 },
-  optional: { color: '#555', fontSize: 12 },
+  title: { color: 'var(--text)', fontSize: 22, fontWeight: 700, margin: '0 0 8px' },
+  label: { color: 'var(--text-meta)', fontSize: 13 },
+  optional: { color: 'var(--text-note)', fontSize: 12 },
   input: {
     padding: '9px 12px',
     borderRadius: 7,
-    border: '1px solid #444',
-    background: '#222',
-    color: '#fff',
+    border: '1px solid var(--btn-border)',
+    background: 'var(--bg)',
+    color: 'var(--text)',
     fontSize: 14,
     outline: 'none',
     cursor: 'text',
@@ -119,8 +125,8 @@ const s: Record<string, React.CSSProperties> = {
   btn: {
     marginTop: 8,
     padding: '10px',
-    background: '#fff',
-    color: '#000',
+    background: 'var(--text)',
+    color: 'var(--bg)',
     border: 'none',
     borderRadius: 7,
     fontWeight: 700,
@@ -128,6 +134,6 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   error: { color: '#f87171', fontSize: 13, margin: 0 },
-  footer: { color: '#666', fontSize: 13, textAlign: 'center', margin: 0 },
-  link: { color: '#fff', textDecoration: 'underline', cursor: 'pointer' },
+  footer: { color: 'var(--text-note)', fontSize: 13, textAlign: 'center', margin: 0 },
+  link: { color: 'var(--text)', textDecoration: 'underline', cursor: 'pointer' },
 };

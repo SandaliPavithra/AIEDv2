@@ -3,6 +3,7 @@ import json
 from openai import AsyncOpenAI
 
 from app.config import GROK_MODEL, HALLUCINATION_CONFIG, settings
+from app.logging_config import logger
 
 _client: AsyncOpenAI | None = None
 
@@ -31,28 +32,40 @@ async def check_hallucination(
     evaluation_text: str,
     source_chunk: str,
 ) -> tuple[bool, str | None]:
-    client = _get_client()
+    # This is a supplementary safety check on top of evaluate_answer()'s
+    # scoring — it should never be able to take down the core evaluation
+    # feature. Skip (rather than crash) when it's not configured or when the
+    # call itself fails for any reason.
+    if not settings.XAI_API_KEY:
+        logger.warning("[hallucination.py] XAI_API_KEY not configured — skipping hallucination check")
+        return False, None
 
-    response = await client.chat.completions.create(
-        model=GROK_MODEL,
-        temperature=HALLUCINATION_CONFIG["temperature"],
-        top_p=HALLUCINATION_CONFIG["top_p"],
-        messages=[
-            {"role": "system", "content": HALLUCINATION_SYSTEM},
-            {
-                "role": "user",
-                "content": (
-                    f"Source chunk:\n{source_chunk}\n\n"
-                    f"Evaluation:\n{evaluation_text}"
-                ),
-            },
-        ],
-    )
+    try:
+        client = _get_client()
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    result = json.loads(raw)
-    return result["hallucination_flag"], result.get("hallucination_note")
+        response = await client.chat.completions.create(
+            model=GROK_MODEL,
+            temperature=HALLUCINATION_CONFIG["temperature"],
+            top_p=HALLUCINATION_CONFIG["top_p"],
+            messages=[
+                {"role": "system", "content": HALLUCINATION_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Source chunk:\n{source_chunk}\n\n"
+                        f"Evaluation:\n{evaluation_text}"
+                    ),
+                },
+            ],
+        )
+
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = json.loads(raw)
+        return result["hallucination_flag"], result.get("hallucination_note")
+    except Exception:
+        logger.exception("[hallucination.py] check_hallucination failed — proceeding without a hallucination flag")
+        return False, None

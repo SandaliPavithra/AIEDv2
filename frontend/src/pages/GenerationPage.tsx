@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuizSession } from '../hooks/useQuizSession';
+import AppHeader from '../components/AppHeader';
 import QuizSetupForm from '../components/quiz/QuizSetupForm';
 import GeneratingScreen from '../components/quiz/GeneratingScreen';
 import QuestionCard from '../components/quiz/QuestionCard';
@@ -8,7 +9,6 @@ import QuizComplete from '../components/quiz/QuizComplete';
 
 export default function GenerationPage() {
   const navigate = useNavigate();
-  const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') !== 'light');
 
   const {
     phase,
@@ -18,20 +18,17 @@ export default function GenerationPage() {
     questionNumber,
     totalQuestions,
     submitting,
+    reveal,
     startSession,
     retryGenerating,
     submitAnswer,
+    continueToNext,
     restart,
     recordTextInteraction,
     recordOptionSelect,
     recordOptionHoverStart,
     recordOptionHoverEnd,
   } = useQuizSession();
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
-    localStorage.setItem('theme', isDark ? 'dark' : 'light');
-  }, [isDark]);
 
   useEffect(() => {
     if (!localStorage.getItem('access_token')) {
@@ -41,21 +38,7 @@ export default function GenerationPage() {
 
   return (
     <div style={s.page} className="show-cursor">
-      <header style={s.header}>
-        <span style={s.headerTitle}>Question Generation</span>
-        <div style={s.headerActions}>
-          <button
-            className="theme-toggle"
-            onClick={() => setIsDark((d) => !d)}
-            aria-label="Toggle light / dark mode"
-          >
-            <span className="toggle-orb" />
-          </button>
-          <button style={s.backBtn} onClick={() => navigate('/dashboard')}>
-            Back to Dashboard
-          </button>
-        </div>
-      </header>
+      <AppHeader />
 
       <main style={s.main}>
         {phase === 'setup' && (
@@ -71,7 +54,9 @@ export default function GenerationPage() {
             totalQuestions={totalQuestions}
             submitting={submitting}
             error={error}
+            reveal={reveal}
             onSubmit={submitAnswer}
+            onContinue={continueToNext}
             onTextInteraction={recordTextInteraction}
             onOptionSelect={recordOptionSelect}
             onOptionHoverStart={recordOptionHoverStart}
@@ -88,46 +73,14 @@ const s: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
     background: 'var(--bg)',
-    fontFamily: 'sans-serif',
+    fontFamily: "'Poppins', sans-serif",
     transition: 'background 0.35s ease',
-  },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 32px',
-    height: 64,
-    background: 'var(--header-bg)',
-    borderBottom: '1px solid var(--header-border)',
-    position: 'sticky',
-    top: 0,
-    zIndex: 100,
-    transition: 'background 0.35s ease, border-color 0.35s ease',
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 700,
-    letterSpacing: '-0.03em',
-    color: 'var(--text)',
-    transition: 'color 0.35s ease',
-  },
-  headerActions: { display: 'flex', alignItems: 'center', gap: 12 },
-  backBtn: {
-    padding: '8px 20px',
-    background: 'transparent',
-    color: 'var(--btn-text)',
-    border: '1px solid var(--btn-border)',
-    borderRadius: 8,
-    fontWeight: 600,
-    cursor: 'pointer',
-    fontSize: 14,
-    transition: 'color 0.35s ease, border-color 0.35s ease',
   },
   main: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 'calc(100vh - 64px)',
+    minHeight: 'calc(100vh - 72px)',
     padding: '32px 16px',
   },
 };

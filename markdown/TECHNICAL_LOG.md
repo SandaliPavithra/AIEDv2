@@ -748,3 +748,122 @@ The Gemini free-tier crunch above wasn't a one-off — Google cut free-tier dail
 No live API call made yet (no cost incurred) — next quiz session + answer submission will be the first real test against the new provider.
 
 ---
+
+## Backend Wouldn't Start — `Router.__init__() got an unexpected keyword argument 'on_startup'`
+
+**Date:** 2026-07-09
+
+### Symptom
+`uvicorn` crashed on startup (before serving anything) with `TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'`, raised from `fastapi/routing.py` while constructing `APIRouter()` in `routers/answers.py`. Nothing in the AIEDv2 codebase had changed since it last ran successfully.
+
+### Root cause
+This backend has never had its own virtual environment — it installs into the machine's **global per-user Python 3.11 site-packages**. `pip show starlette` showed `starlette==1.3.1` (Starlette's 1.0 line removed the `on_startup`/`on_shutdown` `Router.__init__` kwargs that the installed `fastapi==0.115.5` — an old, pre-1.0-Starlette-era version — still passes internally) with `Required-by: fastapi, mcp, sse-starlette`. Something else on this machine that also lives in that same global environment (most likely whatever installed the `mcp` package) pulled `starlette` up to 1.3.1 independently of this project, silently breaking `fastapi` here even though nothing in `requirements.txt` or the app code changed. `requirements.txt` pins `fastapi>=0.115.0` with no upper bound and never pins `starlette` at all (it's an implicit FastAPI dependency), so nothing guarded against this drift.
+
+### Fix
+Gave the backend its own isolated virtual environment (`backend/.venv/`, already covered by `backend/.gitignore`) instead of patching the version conflict in place. Ran `python -m venv .venv` then `pip install -r requirements.txt` fresh inside it — pip's resolver, working from a clean slate, picked a mutually compatible pair on its own: `fastapi-0.139.0` + `starlette-1.3.1`. This is the actual root-cause fix, not a version pin: a quick `pip install --upgrade fastapi` in the shared global environment would have unblocked this one incident, but left the underlying problem (this project's dependencies live in the same space as every other Python tool on the machine) free to recur the next time something else bumps a shared package. User chose this option explicitly over the quick global-upgrade alternative.
+
+### Verified
+- `./.venv/Scripts/python.exe -c "import app.main"` — clean, no `TypeError`.
+- Re-checked (didn't just assume) that `anthropic` (resolved to `0.116.0` in the fresh install) still exposes `output_config` on `messages.create()` via `inspect.signature`, since the 2026-07-08 Anthropic migration depends on it.
+- `git status --short backend/.venv` — empty, confirming the new venv is actually excluded, not silently about to be committed.
+
+### Not done
+Did not attempt to reconcile or pin exact versions for the global environment — out of scope now that this project no longer depends on it. `backend/requirements.txt` itself is unchanged (still open-ended `>=` pins); the isolation, not tighter pinning, is what prevents recurrence.
+
+---
+
+## "Some Answers Aren't Added" — Investigated, No Bug Found in Submission Path
+
+**Date:** 2026-07-09
+
+### Symptom
+User reported some answers seemingly not persisting for a session, with behaviour data apparently tracked regardless.
+
+### Investigation
+Traced the full submit path (`useQuizSession.ts` → `POST /answers/` → `POST /answers/{id}/events` → `answers_decrypted`/`answer_behaviour_decrypted` INSTEAD OF INSERT triggers) and cross-referenced exported CSVs (`answers_decrypted`, `answer_behaviour_decrypted`, `questions`) row by row. Result: every existing answer has exactly one matching behaviour row and vice versa — zero orphans, zero duplicates, zero cross-session mismatches. The only "missing" rows were three *entire* sessions with 0/5, 0/2, and 0/3 answers each (not partial gaps within an otherwise-answered session) — all three session IDs (`a4aaa51c...`, `b7eb2c67...`, `495df733...`) are ones already named in the 2026-07-07 trivia/chunk-diversity entry and the 2026-07-08 Gemini-quota-exhaustion entry above. Conclusion: those sessions' generation struggled or was slow, the frontend's 45s poll timeout fired, the user moved on instead of retrying, and the backend's `BackgroundTasks`-driven generation kept running and eventually wrote `questions` rows nobody ever got to answer. No code changed — the submission pipeline itself is correct.
+
+### Related recurrence caught live in the same conversation
+A fresh live log from testing the new quiz-setup UI showed the *cause* of this class of incident directly: `hybrid_search found 0 candidate chunk(s) ... difficulty=easy` → `Zero chunks matched — likely no ingested content tagged difficulty=easy for this topic`. This is the same gap already called out as "Not fixed (by design, for now)" in the 2026-07-07 entry — Book1's chunks are all tagged `medium`, so selecting `easy`/`hard` guarantees 0 questions and an eventual timeout. Asked the user whether to build difficulty-aware validation now (disable/warn on difficulty options with no matching ingested content); declined for now — continuing to use `medium` manually until the corpus has more than one difficulty tier.
+
+---
+
+## Every Generation Call Failing — Claude Rejects `enum` Combined with Array `type` in Structured Output
+
+**Date:** 2026-07-09
+
+### Symptom
+This is the "first real test against the new provider" flagged as not-yet-verified in the 2026-07-08 Anthropic migration entry above. A live log with `difficulty=medium` (so `hybrid_search` correctly found 30 candidate chunks — not the zero-chunks issue) showed **every single** `generate_question()` call failing across two separate sessions, each with the identical error:
+```
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error',
+'message': "output_config.format.schema: Invalid schema: Enum value 'short_answer' does not match declared type '['string', 'null']'"}}
+```
+Quiz generation was completely non-functional — not intermittent, not content-dependent, 100% failure rate.
+
+### Root cause
+`GENERATION_OUTPUT_SCHEMA` in `services/generation.py` declared `question_type` as `{"type": ["string", "null"], "enum": ["short_answer", "long_answer", "mcq", None]}` — an array `type` combined with `enum` on the same schema node. Every *other* nullable field in the same schema (`question_text`, `correct_index`, `expected_time_seconds`, etc.) uses the identical `type: [X, "null"]` pattern with no error, so this isn't Claude rejecting nullable-via-type-array in general — it's specifically the `enum` + array-`type` combination that its structured-output schema validator rejects, even though `'short_answer'` is trivially a string and should satisfy `['string', 'null']` under normal JSON Schema semantics. Claude's `output_config.format.json_schema` implements a stricter subset than full JSON Schema draft-07.
+
+### Verified before fixing (not just asserted)
+Wrote a minimal standalone probe script (`backend/_schema_probe.py`, deleted after use) making two tiny live calls against the real API with the same model: one with the exact current (broken) schema fragment, one with an `anyOf`-based rewrite (`"anyOf": [{"type": "string", "enum": [...]}, {"type": "null"}]`). The broken version reproduced the exact same error message character-for-character; the `anyOf` version succeeded (`{"skip": true, "question_type": null}`). Fix applied to `generation.py` only after confirming the replacement actually works, not on the theory alone. Also checked `evaluation.py`'s structured-output schema for the same anti-pattern — it has no `enum` fields at all, so it wasn't affected.
+
+### Fix
+Rewrote just the `question_type` field to use `anyOf` instead of the array-`type`+`enum` combo. No other field needed to change.
+
+### Verified after
+`python -c "import app.main"` clean. The two live probe calls above are the actual functional verification — next real quiz session will exercise it end-to-end.
+
+---
+
+## Next Layer of the Same Test: Claude Rejects `temperature` + `top_p` Together
+
+**Date:** 2026-07-09
+
+### Symptom
+Immediately after the schema fix above, a fresh quiz session (`difficulty=medium`, 30 chunks found — schema error gone) still generated 0 questions. Every chunk attempt now failed identically with:
+```
+anthropic.BadRequestError: Error code: 400 - {'message': '`temperature` and `top_p` cannot both be specified for this model. Please use only one.'}
+```
+
+### Root cause
+`generate_question()` passes both `temperature=config["temperature"]` and `top_p=config["top_p"]` to `client.messages.create()`. This particular Claude model/config combination (structured output via `output_config`) rejects specifying both sampling parameters at once.
+
+### Verified before fixing
+Grepped all Anthropic call sites: `generation.py` and `evaluation.py` both pass `temperature`+`top_p` together (same bug, `evaluation.py`'s just hadn't fired yet — nothing calls `POST /evaluations/{id}` from the frontend currently). `hallucination.py` also passes both, but it's unaffected — that one goes through `AsyncOpenAI` pointed at xAI's Grok endpoint, a different provider with no such restriction. Wrote a 3-way probe (`backend/_temp_top_p_probe.py`, deleted after use) against the live API: `temperature` alone → success, `top_p` alone → success, both together → the exact same error. Confirmed the fix works before touching real code.
+
+### Fix
+Dropped `top_p` from the `client.messages.create()` calls in both `generation.py` and `evaluation.py` — kept `temperature` only. `GENERATION_CONFIG`/`EVALUATION_CONFIG` dicts are unchanged; `top_p` is still recorded on `test_sessions.generation_top_p` / `evaluations.evaluation_top_p` for provenance, it's just no longer sent to the model itself. `hallucination.py` untouched (different provider, not broken).
+
+### Verified after
+`python -c "import app.main"` clean. Live probe confirms `temperature`-only succeeds against the real model; next real quiz session is the end-to-end check.
+
+---
+
+## First Live Answer Evaluation — Three Distinct Bugs Behind One 500
+
+**Date:** 2026-07-09
+
+### Symptom
+First real end-to-end answer submission (MCQ worked, since it's rule-based). Short/long answer submissions got a `500 Internal Server Error` on `POST /evaluations/{answer_id}` every time — the actual first live exercise of `evaluate_answer()` and `check_hallucination()`, neither of which had ever been invoked before (nothing in the frontend called this endpoint until this session's quiz-card rework).
+
+### Bug 1 — `claude-sonnet-5` rejects `temperature`/`top_p` individually, not just together
+The 2026-07-09 fix above (drop `top_p`, keep `temperature`) was correct for `generation.py`'s model (`claude-haiku-4-5`, which only rejects the *combination*) but wrong for `evaluation.py`'s model. Live probe against `claude-sonnet-5` specifically:
+```
+neither:           SUCCESS (after one 529-overloaded retry — transient, unrelated)
+temperature only:  FAILED — "`temperature` is deprecated for this model."
+top_p only:        FAILED — "`top_p` is deprecated for this model."
+both:               FAILED — same as temperature-only
+```
+Fix: dropped both params entirely from `evaluate_answer()`'s `client.messages.create()` call. `EVALUATION_CONFIG` import removed from `services/evaluation.py` (no longer used there); the router still records the configured values on the `evaluations` row for provenance.
+
+### Bug 2 — `XAI_API_KEY` was never actually set
+Once evaluate_answer() worked, `check_hallucination()` failed with `OpenAIError: Missing credentials`. Not a code bug — `backend/.env` has no `XAI_API_KEY` value, so the Grok hallucination check has never had real credentials, in this session or (seemingly) ever. Asked the user how to handle it: make the check optional rather than get a real key right now. `check_hallucination()` now returns `(False, None)` and logs a warning if `XAI_API_KEY` is unset, and the whole function body is wrapped in try/except so *any* failure in this supplementary safety check degrades gracefully instead of taking down the core evaluation feature it sits on top of.
+
+### Feature request surfaced in the same report
+User: "the evaluation model needs to explain why the other answers are wrong too" (only got "the correct answer is X" for a wrong MCQ guess). Added `explain_mcq_answer()` in `services/evaluation.py` — MCQ correctness stays a deterministic string comparison (nothing for a judge to weigh in on), but `_score_mcq` in the evaluations router now awaits a Claude call whose only job is the qualitative explanation: confirms correct/incorrect, explains why the right option is right, and names the specific misconception behind each of the other three options. `evaluator_model` on MCQ rows now records `CLAUDE_EVALUATION_MODEL` (the explanation went through it) even though correctness itself didn't.
+
+### Verified
+Live-probed all three independently before touching code: `evaluate_answer()` (confirmed the exact 500, then confirmed the fix), `check_hallucination()` (confirmed the exact missing-credentials error, then confirmed graceful skip), `explain_mcq_answer()` (confirmed it actually names all three wrong options' specific errors, not generic "it's wrong" filler). `python -c "import app.main"` clean throughout.
+
+### Separately: hooks-order crash reported alongside this
+Console also showed a React "change in the order of Hooks" crash in `GenerationPage`/`useQuizSession`. Read `useQuizSession.ts` fully — every hook is called unconditionally in a fixed sequence, no conditionals or early returns before any hook. Same signature as the earlier `ReferenceError: useRef is not defined` incident this session: a stale Vite Fast Refresh snapshot mid-edit, not a real bug. No code change; resolves with a hard refresh.
+
+---

@@ -53,7 +53,6 @@ async def create_session(
         "test_sessions",
         json={
             "user_id": str(user["id"]),
-            "topic_id": str(req.topic_id),
             "difficulty": req.difficulty,
             "total_questions": req.total_questions,
             "status": "in_progress",
@@ -63,42 +62,66 @@ async def create_session(
         },
     )
 
+    await rest_post(
+        "session_topics",
+        json=[{"session_id": session["id"], "topic_id": str(tid)} for tid in req.topic_ids],
+    )
+
     background_tasks.add_task(
         _generate_session_questions,
         session["id"],
-        req.topic_id,
+        req.topic_ids,
         req.difficulty,
         req.question_type,
         req.total_questions,
         config["top_k_rag"],
     )
 
-    return SessionResponse(**session)
+    return SessionResponse(**session, topic_ids=req.topic_ids)
 
 
 async def _generate_session_questions(
     session_id: uuid.UUID,
-    topic_id: uuid.UUID,
+    topic_ids: list[uuid.UUID],
     difficulty: str,
     question_type: str,
     count: int,
     top_k: int,
 ) -> None:
     logger.info(
-        "[sessions.py] Generating %d question(s) for session %s (topic_id=%s, difficulty=%s, type=%s)",
-        count, session_id, topic_id, difficulty, question_type,
+        "[sessions.py] Generating %d question(s) for session %s (topic_ids=%s, difficulty=%s, type=%s)",
+        count, session_id, topic_ids, difficulty, question_type,
     )
-    topic = await rest_get_one("topics", params={"id": f"eq.{topic_id}", "select": "name"})
-    if not topic:
-        logger.warning("[sessions.py] Topic %s not found — no questions will be generated for session %s", topic_id, session_id)
+    topics = await rest_get(
+        "topics",
+        params={"id": f"in.({','.join(str(t) for t in topic_ids)})", "select": "id,name"},
+    )
+    if not topics:
+        logger.warning("[sessions.py] None of topic_ids %s were found — no questions will be generated for session %s", topic_ids, session_id)
         return
 
-    query_text = topic["name"]
+    # One hybrid_search per topic (query_text = topic name), pools merged and
+    # deduped by chunk id — the RPC has no topic_id filter of its own, it
+    # relies entirely on the topic name being a good semantic/FTS query, so a
+    # multi-topic session just runs that same query once per selected topic.
     pool_size = max(count * _POOL_MULTIPLIER, _MIN_POOL_SIZE)
-    chunks = await hybrid_search(query_text, difficulty if difficulty != "mixed" else None, pool_size)
+    chunk_pools = await asyncio.gather(*(
+        hybrid_search(t["name"], difficulty if difficulty != "mixed" else None, pool_size)
+        for t in topics
+    ))
+
+    seen_chunk_ids = set()
+    chunks = []
+    for pool in chunk_pools:
+        for chunk in pool:
+            if chunk["id"] in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk["id"])
+            chunks.append(chunk)
+
     logger.info(
-        "[sessions.py] hybrid_search found %d candidate chunk(s) for topic %r, difficulty=%s (pool_size=%d)",
-        len(chunks), query_text, difficulty, pool_size,
+        "[sessions.py] hybrid_search found %d candidate chunk(s) across %d topic(s) %r, difficulty=%s (pool_size=%d each)",
+        len(chunks), len(topics), [t["name"] for t in topics], difficulty, pool_size,
     )
     if not chunks:
         logger.warning(
@@ -110,6 +133,12 @@ async def _generate_session_questions(
     # Randomize draw order so different sessions explore different parts of
     # the book instead of always hitting the same highest-ranked chunks.
     random.shuffle(chunks)
+
+    # Each chunk carries its own topic_id (may be null) — resolve the prompt's
+    # "Topic: ..." context per chunk instead of a single session-wide topic,
+    # falling back to the first selected topic when a chunk has none.
+    topic_name_by_id = {t["id"]: t["name"] for t in topics}
+    default_topic_name = topics[0]["name"]
 
     generated = 0
     skipped = 0
@@ -124,7 +153,10 @@ async def _generate_session_questions(
             for _ in batch
         ]
         results = await asyncio.gather(*(
-            _attempt_question(chunk, qtype, difficulty if difficulty != "mixed" else "medium", topic["name"], session_id)
+            _attempt_question(
+                chunk, qtype, difficulty if difficulty != "mixed" else "medium",
+                topic_name_by_id.get(chunk.get("topic_id"), default_topic_name), session_id,
+            )
             for chunk, qtype in zip(batch, qtypes)
         ))
 
@@ -204,6 +236,11 @@ async def _attempt_question(
         return None
 
 
+async def _get_topic_ids(session_id: uuid.UUID) -> list[uuid.UUID]:
+    rows = await rest_get("session_topics", params={"session_id": f"eq.{session_id}", "select": "topic_id"})
+    return [r["topic_id"] for r in rows]
+
+
 @router.get("/{session_id}", response_model=SessionResponse)
 async def get_session(
     session_id: uuid.UUID,
@@ -215,7 +252,7 @@ async def get_session(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
-    return SessionResponse(**row)
+    return SessionResponse(**row, topic_ids=await _get_topic_ids(session_id))
 
 
 # correct_index is deliberately excluded — this endpoint is the quiz-taking
@@ -270,7 +307,7 @@ async def complete_session(
 
     asyncio.create_task(_snapshot_progress(session_id, user["id"]))
 
-    return SessionResponse(**row)
+    return SessionResponse(**row, topic_ids=await _get_topic_ids(session_id))
 
 
 async def _snapshot_progress(session_id: uuid.UUID, user_id: uuid.UUID) -> None:

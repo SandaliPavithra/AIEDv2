@@ -33,6 +33,19 @@ interface Session {
   total_questions: number;
 }
 
+export interface EvaluationResult {
+  feedback_text: string;
+  factual_correctness_score: number;
+  final_score: number;
+}
+
+interface StartSessionParams {
+  topic_ids: string[];
+  difficulty: Difficulty;
+  question_type: QuestionType;
+  total_questions: number;
+}
+
 const GENERATION_TIMEOUT_MS = 45_000;
 const POLL_INTERVAL_MS = 2_000;
 const MOUSE_ACTIVITY_THROTTLE_MS = 2_000;
@@ -73,6 +86,7 @@ export function useQuizSession() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [reveal, setReveal] = useState<EvaluationResult | null>(null);
 
   const eventsRef = useRef<{ event_type: string; event_at: string }[]>([]);
   const startedRef = useRef(false);
@@ -184,12 +198,7 @@ export function useQuizSession() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const startSession = useCallback(async (params: {
-    topic_id: string;
-    difficulty: Difficulty;
-    question_type: QuestionType;
-    total_questions: number;
-  }) => {
+  const startSession = useCallback(async (params: StartSessionParams) => {
     setError(null);
     try {
       const s: Session = await apiFetch('/sessions/', {
@@ -233,12 +242,12 @@ export function useQuizSession() {
         body: JSON.stringify({ events: eventsRef.current }),
       });
 
-      if (currentIndex + 1 >= questions.length) {
-        await apiFetchWithRetry(`/sessions/${session.id}/complete`, { method: 'POST' });
-        setPhase('complete');
-      } else {
-        setCurrentIndex((i) => i + 1);
-      }
+      // Reveal, don't advance — the student sees the mini-evaluation for this
+      // question before choosing to move on via continueToNext().
+      const evaluation: EvaluationResult = await apiFetchWithRetry(`/evaluations/${answer.id}`, {
+        method: 'POST',
+      });
+      setReveal(evaluation);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit answer. Your answer has been kept — try again.');
     } finally {
@@ -246,10 +255,31 @@ export function useQuizSession() {
     }
   }, [session, questions, currentIndex]);
 
+  const continueToNext = useCallback(async () => {
+    if (!session) return;
+    setReveal(null);
+    setError(null);
+
+    if (currentIndex + 1 >= questions.length) {
+      setSubmitting(true);
+      try {
+        await apiFetchWithRetry(`/sessions/${session.id}/complete`, { method: 'POST' });
+        setPhase('complete');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to complete the quiz. Try again.');
+      } finally {
+        setSubmitting(false);
+      }
+    } else {
+      setCurrentIndex((i) => i + 1);
+    }
+  }, [session, questions, currentIndex]);
+
   const restart = useCallback(() => {
     setSession(null);
     setQuestions([]);
     setCurrentIndex(0);
+    setReveal(null);
     setError(null);
     setPhase('setup');
   }, []);
@@ -262,9 +292,11 @@ export function useQuizSession() {
     questionNumber: currentIndex + 1,
     totalQuestions: session?.total_questions ?? questions.length,
     submitting,
+    reveal,
     startSession,
     retryGenerating,
     submitAnswer,
+    continueToNext,
     restart,
     recordTextInteraction,
     recordOptionSelect,

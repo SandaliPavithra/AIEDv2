@@ -212,7 +212,6 @@ CREATE TRIGGER trg_chunks_fts
 CREATE TABLE test_sessions (
     id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id                UUID         NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
-    topic_id               UUID         NOT NULL REFERENCES topics(id),
     difficulty             VARCHAR(20)  NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard', 'mixed')),
     total_questions        INT          NOT NULL,
     status                 VARCHAR(20)  NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'abandoned')),
@@ -225,7 +224,18 @@ CREATE TABLE test_sessions (
 );
 
 CREATE INDEX idx_sessions_user  ON test_sessions(user_id);
-CREATE INDEX idx_sessions_topic ON test_sessions(topic_id);
+
+
+-- =============================================================
+-- 10b. session_topics  (many-to-many: a session can span multiple topics)
+-- =============================================================
+CREATE TABLE session_topics (
+    session_id UUID NOT NULL REFERENCES test_sessions(id) ON DELETE CASCADE,
+    topic_id   UUID NOT NULL REFERENCES topics(id),
+    PRIMARY KEY (session_id, topic_id)
+);
+
+CREATE INDEX idx_session_topics_topic ON session_topics(topic_id);
 
 
 -- =============================================================
@@ -419,6 +429,7 @@ ALTER TABLE documents            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_documents       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE document_chunks      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE test_sessions        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE session_topics       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE questions            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE answers              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE question_events      ENABLE ROW LEVEL SECURITY;

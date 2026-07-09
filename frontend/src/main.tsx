@@ -9,22 +9,25 @@ import DashboardPage from './pages/DashboardPage.tsx';
 import GenerationPage from './pages/GenerationPage.tsx';
 import UploadPage from './pages/UploadPage.tsx';
 import AppShell from './components/AppShell.tsx';
+import { ThemeProvider } from './contexts/ThemeContext.tsx';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <AppShell>
-        <Routes>
-          <Route path="/" element={<App />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/signup" element={<SignupPage />} />
-          <Route path="/callback" element={<CallbackPage />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/generate" element={<GenerationPage />} />
-          <Route path="/upload" element={<UploadPage />} />
-        </Routes>
-      </AppShell>
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<App />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/signup" element={<SignupPage />} />
+            <Route path="/callback" element={<CallbackPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/generate" element={<GenerationPage />} />
+            <Route path="/upload" element={<UploadPage />} />
+          </Routes>
+        </AppShell>
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 );
