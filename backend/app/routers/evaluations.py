@@ -10,6 +10,7 @@ from app.models.evaluation import EvaluationResponse
 from app.services.evaluation import evaluate_answer, explain_mcq_answer
 from app.services.hallucination import check_hallucination
 from app.services.scoring import compute_scores
+from app.services.text_metrics import compute_conciseness_score, compute_copy_similarity_score
 from app.supabase_rest import rest_get_one, rest_post_one
 
 router = APIRouter()
@@ -115,6 +116,18 @@ async def run_evaluation(
         time_modifier=time_modifier,
     )
 
+    # Deterministic, no additional AI call — None for MCQ (see text_metrics.py).
+    conciseness_score = compute_conciseness_score(
+        answer_text=answer["answer_text"],
+        question_type=question["question_type"],
+        difficulty=question["difficulty"],
+    )
+    copy_similarity_score = compute_copy_similarity_score(
+        answer_text=answer["answer_text"],
+        source_chunk=source_chunk,
+        question_type=question["question_type"],
+    )
+
     # Plaintext in — the evaluations_decrypted view's INSTEAD OF INSERT trigger
     # encrypts concepts_covered/concepts_missed/feedback_text/hallucination_note.
     row = await rest_post_one(
@@ -133,6 +146,8 @@ async def run_evaluation(
             "raw_score": derived["raw_score"],
             "time_modifier": time_modifier,
             "final_score": derived["final_score"],
+            "conciseness_score": conciseness_score,
+            "copy_similarity_score": copy_similarity_score,
             "concepts_covered": scores.get("concepts_covered", []),
             "concepts_missed": scores.get("concepts_missed", []),
             "feedback_text": scores["feedback_text"],

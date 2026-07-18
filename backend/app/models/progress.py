@@ -19,6 +19,8 @@ class ProgressSnapshotResponse(BaseModel):
     avg_raw_score: Decimal | None = None
     avg_final_score: Decimal | None = None
     avg_time_modifier: Decimal | None = None
+    avg_conciseness: Decimal | None = None
+    avg_copy_similarity: Decimal | None = None
     dominant_behaviour: str | None = None
     questions_attempted: int
     sessions_completed: int
@@ -60,6 +62,19 @@ class ChatMessageRequest(BaseModel):
     content: str
 
 
+class ChatChartSeries(BaseModel):
+    name: str
+    values: list[float]
+
+
+class ChatChart(BaseModel):
+    kind: str
+    title: str
+    x_labels: list[str]
+    series: list[ChatChartSeries]
+
+
 class ChatMessageResponse(BaseModel):
     role: str
     content: str
+    chart: ChatChart | None = None

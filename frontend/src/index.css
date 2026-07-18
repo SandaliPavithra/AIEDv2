@@ -5,6 +5,16 @@
   --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
 }
 
+.landing-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: 4.5rem;
+  line-height: 1.2;
+  text-transform: uppercase;
+  color: transparent;
+}
+
 :root {
   /* Dark mode defaults */
   --bg: #0a0a0a;

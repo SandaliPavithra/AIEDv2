@@ -21,7 +21,7 @@ const FEATURES: FeatureCard[] = [
   { title: 'Quizzes', description: 'Generate a fresh quiz and test what you actually remember.', href: '/generate' },
   { title: 'Sources', description: 'Browse the textbooks your quizzes are pulled from.', href: '/upload', adminOnly: true },
   { title: 'Upload Books', description: 'Add new course material for the AI to draw questions from.', href: '/upload', adminOnly: true },
-  { title: 'Evaluation', description: 'See how your answers were actually scored, concept by concept.' },
+  { title: 'Evaluation', description: 'See how your answers were actually scored, concept by concept.', href: '/evaluation' },
   { title: 'Recommendations', description: "What to study next, based on where you're actually weak." },
   { title: 'Goals', description: 'Set a target and track how close you are to reaching it.' },
 ];

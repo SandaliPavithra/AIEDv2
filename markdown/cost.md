@@ -5,6 +5,10 @@
 
 ---
 
+**⚠️ Flagged, not corrected, as of 2026-07-16:** the code now runs `claude-sonnet-5` and `claude-haiku-4-5` (`backend/app/config.py`), not the "Claude Sonnet 4.6" / "Claude Haiku 4.5" this document's pricing tables were built around — those are different model generations with pricing this document has not re-verified. Every `$/MTok` figure, rate limit, and cost projection below should be treated as **unconfirmed for the models actually in use** until re-checked against real current pricing before any real budget commitment. Not rewritten here because the actual current numbers aren't in hand — guessing at them would be worse than leaving this flagged. Also not reflected below: the new evaluation-analysis chatbot (`/evaluation` page, 2026-07-16) adds a second user-triggered, pay-per-message cost path on top of the existing goal chat — both reuse the same `CLAUDE_CHATBOT_MODEL` row above, so no new model to price, but a second usage pattern this doc's "Cost Per Question Cycle" section doesn't account for (that section only covers the automatic quiz generation → evaluation → verification path, not on-demand chat).
+
+---
+
 ## Exchange Rate Reference
 | Currency | Rate |
 |---|---|

@@ -772,6 +772,30 @@ Did not attempt to reconcile or pin exact versions for the global environment �
 
 ---
 
+## Same Crash, Recurred — Because the 2026-07-09 Fix Was Never Actually Adopted
+
+**Date:** 2026-07-16
+
+### Symptom
+The exact same `TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'` crash, one week after the entry directly above concluded it was fixed by isolating into `backend/.venv/`.
+
+### Root cause
+The 2026-07-09 fix was real and the `.venv` itself was never broken — confirmed this session: `.venv/Scripts/python.exe -c "import app.main"` still imports clean, with its own internally-consistent `fastapi-0.139.0` + `starlette-1.3.1` pair, untouched. The problem is that isolation was never actually put into the day-to-day run path. `Get-Command uvicorn` in the user's actual PowerShell session resolves to `...PythonSoftwareFoundation.Python.3.11.../Scripts/uvicorn.exe` — the same global, shared, per-user site-packages location as before, not `.venv/Scripts/uvicorn.exe`. Something else on the machine (same suspect as before — a `mcp`-dependent tool, confirmed this session: `sse-starlette 3.4.5` in that global environment requires `starlette>=0.49.1`, a completely different and incompatible range from what `fastapi==0.115.5` needs) had again pulled the global `starlette` up to an incompatible version. The `.venv` was always fine; the command actually being run never used it.
+
+### Fix (this occurrence)
+Patched the global environment directly this time: `pip install "starlette>=0.40.0,<0.42.0"` (the exact range `fastapi==0.115.5` itself declares via its own package metadata, checked directly rather than guessed) — this is the quick global-upgrade option the 2026-07-09 entry explicitly considered and passed over in favor of isolation. Confirmed via `python -c "import app.main"` against that same global interpreter.
+
+### Not fixed (at the time) — real gap going forward
+Nothing changed about *which* environment `uvicorn` actually launches from — the recurrence risk the 2026-07-09 entry was specifically trying to eliminate was still live, because the fix that was supposed to eliminate it wasn't in the path being used.
+
+### Follow-up fix, same day: pinned `starlette` in `requirements.txt`
+Added `starlette>=0.46.0` to `backend/requirements.txt`. First attempt got this wrong: pinned `starlette>=0.40.0,<0.42.0` — the range that matched the *old, coincidentally-broken* global `fastapi==0.115.5`, not the range that actually matters. Caught before it shipped by checking `.venv`'s own `fastapi==0.139.0` metadata directly (`fastapi wants: starlette>=0.46.0`) — that's the pair a genuinely clean `pip install -r requirements.txt` resolves to on its own (per the 2026-07-09 entry), so pinning backward to the old range would have been actively wrong, not just imprecise: it could have made a truly fresh install unsatisfiable if pip picked a newer `fastapi` against an artificially-capped old `starlette`. Corrected to `starlette>=0.46.0` and verified with `pip check` against `.venv` — no conflicts. This also means a future `pip install -r requirements.txt` run against the currently-broken global environment should self-heal: with no upper bound on `fastapi`, pip's resolver has room to upgrade `fastapi` alongside `starlette` to reach a compatible pair, rather than getting stuck.
+
+### Verified
+`python -c "import app.main"` clean against the global interpreter (immediate fix) and against `.venv` (pin correction). Confirmed live — `/docs` returned 200 and `/auth/me` returned a correct 401 (not a connection error) once the user restarted `uvicorn`.
+
+---
+
 ## "Some Answers Aren't Added" — Investigated, No Bug Found in Submission Path
 
 **Date:** 2026-07-09
@@ -865,5 +889,227 @@ Live-probed all three independently before touching code: `evaluate_answer()` (c
 
 ### Separately: hooks-order crash reported alongside this
 Console also showed a React "change in the order of Hooks" crash in `GenerationPage`/`useQuizSession`. Read `useQuizSession.ts` fully — every hook is called unconditionally in a fixed sequence, no conditionals or early returns before any hook. Same signature as the earlier `ReferenceError: useRef is not defined` incident this session: a stale Vite Fast Refresh snapshot mid-edit, not a real bug. No code change; resolves with a hard refresh.
+
+---
+
+## Landing Page Background: CSS Stacking-Context Bug Made an Animated Layer Invisible
+
+**Date:** 2026-07-13
+
+### Symptom
+Added an animated conic-gradient + dot-grid mask as `.landing-bg`, an absolutely-positioned `z-index: -1` child of the landing page's root wrapper div (`App.tsx`), meant to sit behind the title/button. After deploying, the page looked pixel-identical to before the change — no visible background effect at all, not even a static one.
+
+### Root cause
+The wrapper div had `position: relative` but no explicit `z-index`, so it never formed its own stacking context. A `z-index: -1` descendant of an element that isn't itself a stacking-context root escapes to the nearest ancestor stacking context instead of being contained locally — so the wrapper's own `background: var(--bg)` (painted as part of a later paint step, since the wrapper itself is a `z-index:auto` positioned box) ended up compositing *on top of* the `-1` layer, completely covering it.
+
+### Fix
+Added an explicit `zIndex: 0` to the wrapper div alongside `position: relative`, forcing it to establish its own stacking context so the `-1` child now paints between the flat background and the actual content, as intended.
+
+### Verified after
+User screenshot confirmed the background layer became visible.
+
+---
+
+## Landing Page Background Animation: `mask-composite: intersect` Not Supported in Chromium
+
+**Date:** 2026-07-13
+
+### Symptom
+Once the background layer was visible (previous entry), its `@keyframes` animation appeared completely static — no motion at all, despite a correct `animation: ... infinite linear` declaration.
+
+### Root cause
+The mask combined two layers (a dot-grid `radial-gradient` and an inline-SVG noise texture) via `mask-composite: intersect`. Chromium does not implement the unprefixed `mask-composite` property's `intersect` keyword — only the legacy `-webkit-mask-composite` with Porter-Duff keywords (`source-in`, etc.). The second mask layer silently failed to composite, so the only thing driving the `mask-position` keyframe (the noise layer) had no visible effect.
+
+### Fix
+Replaced the two-layer intersect mask with a single-layer `radial-gradient` dot mask (no compositing needed, universally supported) that pans via animated `mask-position`, plus a `filter: hue-rotate()` animation on the same element for visible color motion — both techniques with no cross-browser ambiguity.
+
+### Verified after
+User confirmed visible motion after the fix.
+
+---
+
+## Landing Page Hero Text Contrast: CSS `filter` Cannot Threshold a `mix-blend-mode` Result
+
+**Date:** 2026-07-13
+
+### Symptom
+Wanted the hero title's text color to auto-contrast against the animated background behind it: solid black where the background is bright, solid white where it's dark, zero gray/gradient in between. First attempt: `color: #fff` + `mix-blend-mode: difference` (auto-contrast against the backdrop) + an SVG `feComponentTransfer type="discrete"` threshold filter (to force pure black/white). Screenshots showed a continuous metallic gray gradient across the letters with visible color tinting — not binary at all.
+
+### Root cause
+Per the CSS Filter Effects Module spec, `filter` is applied to an element's own rendered content *before* `mix-blend-mode` composites that content against the backdrop. The threshold filter was therefore thresholding plain, solid white text (a no-op — white stays white) *before* the blend-mode step ran; the colorful, non-thresholded diff the user saw was the unmodified output of blending happening after the filter, unaffected by it. No CSS-only property ordering exists to threshold an already-blended result on a single element.
+
+### Fix
+Moved the entire contrast computation into the landing page's WebGL shader (`ShaderBackground.tsx`, added this session to replace the CSS background with a Three.js-rendered animated wave, ported from a supplied vanilla-JS/Three.js reference implementation). The title is rasterized onto an offscreen 2D canvas — matching the real, now-invisible `<h1>`'s measured font/position/wrap width — and uploaded as a mask texture; the fragment shader computes the background wave's luminance per pixel and applies a true GLSL `step()` threshold (`float inverted = step(luma, 0.5);`) only where the mask indicates a glyph, leaving the surrounding animated background untouched elsewhere.
+
+### Verified before fixing
+Dispatched a research agent to confirm, against the actual CSS Filter Effects Module spec text, that filter effects apply before compositing/blending — cited as the basis for abandoning the CSS-only approach rather than continuing to guess at filter tuning.
+
+### Verified after
+`tsc --noEmit` clean. User screenshot after the fix showed genuine hard-edged black/white text with no gradient.
+
+---
+
+## Landing Page Shader Text: Resize Race Between Two Components
+
+**Date:** 2026-07-13
+
+### Symptom
+After the shader-based text fix above, resizing the browser window left the title rendered as two overlapping copies at different wrap-widths — one matching the new viewport, one stale from before the resize — until a hard refresh. User flagged this as a mobile-affecting UI failure.
+
+### Root cause
+`ShaderBackground` had its own `window resize` listener (resizing the WebGL canvas and immediately redrawing the text mask), while a *separate* `useEffect`/`ResizeObserver` in `App.tsx` independently measured the real `<h1>`'s `getBoundingClientRect()`/`getComputedStyle()` and pushed the result down as `titleLayout` React state/props. The two listeners fired independently in registration order: the canvas's own resize handler frequently redrew the text mask using the *old* layout, because the sibling effect's React state update hadn't propagated down as a new prop yet — and nothing forced a later corrective redraw once it did.
+
+### Fix
+Removed the state indirection. `ShaderBackground` now receives the `<h1>`'s ref directly and calls `getBoundingClientRect()`/`getComputedStyle()` synchronously *inside the same function* that resizes the canvas and redraws the mask — resize and remeasure now happen atomically in one call, eliminating any window for stale data. Also added a `ResizeObserver` directly on the title element (covers layout changes not triggered by a `window resize` event, e.g. web font finishing loading) and an immediate `redraw()` call on mount.
+
+### Verified after
+`tsc --noEmit` clean. Logged as a standing lesson in project memory (`feedback_dom_measurement_races`): don't split "measure a DOM element" and "consume that measurement" across two independently-timed effects/components — measure synchronously at the point of use instead.
+
+---
+
+## Landing Page: Theme-Aware Shader Inversion
+
+**Date:** 2026-07-13
+
+### Change
+The shader background previously rendered identically regardless of the site's light/dark toggle (near-black background with a bright wave, always — even in light mode). Added an `invert` uniform read from the existing `useTheme()` context (`isDark`); in light mode, the fragment shader's final composited color (background + binary text together) is inverted as one operation (`mix(finalColor, 1.0 - finalColor, invert)`), so the near-black background becomes near-white, the bright wave becomes a dark arc, and the binary text flips consistently along with it — all driven by the single existing theme toggle.
+
+### Verified after
+`tsc --noEmit` clean. `invert` uniform updates via a small effect keyed on `isDark`, without tearing down/rebuilding the WebGL context on toggle.
+
+---
+
+## Evaluation Dashboard, Phase 1 — Conciseness + Copy-Detection Scoring
+
+**Date:** 2026-07-16
+
+### Context
+First step toward a planned Evaluation Dashboard (self-facing charts + a Q&A chat grounded in the student's own evaluation/behavior data — brainstormed but not yet built). Scoped down to backend-only for this pass: the interactive chat needs a paid Claude call per message, which isn't worth building until it's actually affordable, so this phase adds only the two scoring dimensions that were missing and their aggregation, with no new endpoint or frontend page yet.
+
+### Requirement
+User pushed back on the initial dashboard proposal for not checking `markdown/Backend Design.md` first, and for risking a design where a chatbot narrates raw data without any real computed rigor behind it — "no different than putting data into a chatbot and getting my evaluation." The existing Scoring Model in that doc is already a real, deterministic weighted formula; the two new dimensions needed to meet the same bar rather than being an ad hoc heuristic.
+
+### What was found already built
+`progress_snapshots` — which the design doc says the dashboard must read from exclusively, never live-aggregating — turned out to already be fully wired: `sessions.py`'s `complete_session()` already calls `_snapshot_progress()` on session completion, which calls a `topic_progress_stats` RPC and upserts into `progress_snapshots_decrypted`; `progress.py` already exposes `GET /progress/` and `GET /progress/{topic_id}` reading from it. None of that needed building — only extending.
+
+### Design decisions (both explicitly confirmed with the user before implementing)
+1. Conciseness and copy-similarity are **separate score columns**, not folded into the existing Raw Score formula (`accuracy×0.35 + recall×0.30 + precision×0.20 + wording×0.15`) — zero risk to an already-implemented, already-tested formula that `overall_score`/`progress_snapshots` already depend on.
+2. Both computed with plain Python in `app/services/text_metrics.py` — no new AI call, so no added per-answer cost. Conciseness: word count vs. an expected-max-words table per question_type/difficulty, penalizing only overshoot (being short is already recall's job). Copy-detection: 8-word n-gram containment ratio between the answer and its source chunk (not `difflib`-style symmetric similarity, which would under-detect a single copied sentence inside an 800-1000 token chunk). Both `None` for MCQ (a selected option isn't a conciseness question and is copied by construction); copy-detection also `None` under 8 words (not enough text to test, not a same-as-zero "not copied").
+
+### Implementation
+- New `backend/app/services/text_metrics.py` — `compute_conciseness_score()`, `compute_copy_similarity_score()`.
+- `evaluations.py` router computes both once per answer (right after the MCQ/free-text branch, since the functions themselves handle the MCQ→`None` case) and includes them in the `evaluations_decrypted` insert payload.
+- `models/evaluation.py` (`EvaluationResponse`) and `models/progress.py` (`ProgressSnapshotResponse`) gained the matching optional fields.
+- `sessions.py`'s `_snapshot_progress()` passes `avg_conciseness`/`avg_copy_similarity` through from the RPC's stats row.
+- New migration `add_conciseness_and_copy_scores.sql`: plain (unencrypted — neither is PII) columns on `evaluations`/`progress_snapshots`; both `_decrypted` views extended (new columns appended at the end, per the existing convention — `CREATE OR REPLACE VIEW` can't reorder/remove); both `_decrypted_insert()` triggers updated to pass the new columns through; `topic_progress_stats` RPC extended to compute and return the two new averages.
+- Documented in `Backend Design.md` (v3.5 changelog entry + a new "Conciseness & Copy-Detection Scoring" section under Scoring Model, with the same table-and-formula format as the rest of that section) rather than leaving the rationale only in code comments.
+
+### A real gotcha caught before it hit the database
+`topic_progress_stats` needed two new output columns added to its `RETURNS TABLE(...)`. `CREATE OR REPLACE FUNCTION` cannot change a function's return type in Postgres — attempting it errors with "cannot change return type of existing function." Added an explicit `DROP FUNCTION IF EXISTS ... ; CREATE FUNCTION ...` and re-applied the `GRANT EXECUTE` that the drop would otherwise silently remove (grants are tied to the specific function, not the name).
+
+### Verified
+`python -c "import app.main"` clean. Hand-tested `text_metrics.py` directly against worked examples: an answer within the expected word count scores 100; double the expected max scores 0 (linear falloff, floored); a verbatim 10-word run copied from a chunk scores 100; an unrelated sentence scores 0; a 3-word answer scores `None` rather than 0; an unknown difficulty value falls back to the medium row instead of raising `KeyError`. Later confirmed live once the migration was applied and real evaluations ran through it (see the three follow-up entries below).
+
+---
+
+## Evaluation Dashboard, Phase 2 — Chat-Only, No Diagrams Yet
+
+**Date:** 2026-07-16
+
+### Context
+Attempted to manually verify the phase-1 scoring by walking a real answer through `POST /evaluations/{answer_id}` via curl (auth login, find an ungraded answer via a SQL query, call the endpoint). User found the manual multi-step process too cumbersome and asked instead to just build the actual `/evaluation` tab, with a live UI to click through. Re-confirmed scope: charts/diagrams dropped for this pass, but the interactive chat (previously deferred for cost) is now explicitly wanted despite the per-message Claude cost.
+
+### Implementation
+- New `evaluation_chat_history` table (`add_evaluation_chat.sql`) — identical shape/encryption to `goal_chat_history` (append-only, encrypted `content`, same `INSTEAD OF INSERT` trigger pattern).
+- New `backend/app/routers/evaluation_chat.py`: `GET /evaluation-chat/history`, `POST /evaluation-chat/chat`. On every chat call, builds a system prompt from the student's *actual* data — latest `progress_snapshots` row per topic (topic names resolved via a `topics` lookup, not raw UUIDs) plus their 20 most recent `evaluations_decrypted` rows — and instructs the model explicitly not to invent a score/trend/behaviour that isn't in that data. This is the direct fix for the user's original "no different than putting data into a chatbot" concern: the model explains precomputed numbers, it doesn't judge from raw answer text. Temperature 0.3 — grounded but not as rigid as `evaluate_answer()`'s 0.1, since this is conversational explanation, not a scored judgment.
+- New `frontend/src/hooks/useEvaluationChat.ts` + `frontend/src/pages/EvaluationPage.tsx` — this is the first real chat UI built in this app (the goal-setting chatbot has only ever had a backend endpoint, never a frontend). Message bubbles, suggested-question chips on first load, loading state while awaiting a reply. Wired at `/evaluation`, and the dashboard's "Evaluation" card (previously a "Coming soon" placeholder with no `href`) now links to it.
+
+### Verified
+`python -c "import app.main"` clean. `tsc --noEmit` clean. First live click-through (below) surfaced the MCQ-conflation and missing-behavioural-data issues immediately — exactly the kind of gap this couldn't have caught without a real response to react to.
+
+---
+
+## Evaluation Chat: MCQ/Free-Text Conflation + Missing Behavioural Data
+
+**Date:** 2026-07-16
+
+### Symptom
+First real live response from the chat (three answers: one MCQ scored 92.3, two free-text scored 47.43/46.15) narrated this as "excellent understanding on July 9, sharp decline by July 16." User called this out directly: the 92.3 was a multiple-choice question, comparing it to free-text depth-of-understanding scores as if equivalent is meaningless. Also: no mention anywhere in the response of hesitation, timing, or behaviour patterns, despite that being explicitly asked for and being the documented point of collecting `answer_behaviour` at all.
+
+### Root cause
+Two separate gaps in `_build_system_prompt()`, not in the underlying scoring:
+1. It never queried `answer_behaviour_decrypted` at all — only `progress_snapshots` (aggregated) and `evaluations` (scores/concepts). The active_time/pause_count/distraction_ratio/start_delay/revision_count/behaviour_label data the user asked about was simply never in the prompt.
+2. `evaluations_decrypted` rows were listed with no `question_type` label. `_score_mcq()` (in `evaluations.py`) sets every one of the five sub-scores to a flat 100 or 0 for MCQ — a correctness fact, not a rubric judgement — but nothing in the chat's context said so, so the model (correctly, given what it was told) treated it as comparable evidence to the nuanced free-text scores.
+
+### Fix
+`_build_system_prompt()` now also fetches `answer_behaviour_decrypted` (by `answer_id`) and `questions.question_type` (by `question_id`) for the same batch of recent evaluations, and `_format_evaluations()` labels each entry `[MCQ]` or `[SHORT_ANSWER]`/`[LONG_ANSWER]` with its behavioural data attached. Rewrote `SYSTEM_PROMPT_TEMPLATE` to add: a rubric legend explaining what each field actually measures (specifically clarifying `wording_score` is deliberately bias-neutral for non-native/regional English and should never be read as an ESL judgement), an explicit instruction never to cite MCQ correctness as depth-of-understanding evidence or blend it into a free-text trend, and a requirement to actually analyze concept mastery + communication quality + behavioural/timing patterns + concrete next steps, rather than reciting numbers back in prose.
+
+### Verified
+`python -c "import app.main"` clean. Retested live — result is the next entry below (still surface-level in a different way, but the specific MCQ/behavioural gaps this entry targeted were not what the user flagged next, which was about depth of analysis, not their absence).
+
+---
+
+## Evaluation Chat: Still Surface-Level — Missing Question Content + Deflecting the Diagnosis
+
+**Date:** 2026-07-16
+
+### Symptom
+Retested (possibly against the pre-restart backend — the response still said "flawless across recall, precision, wording" for what should have been an MCQ-only correctness line with no such numbers, suggesting the previous fix hadn't been picked up yet). Separately, and independent of that: the response still read as a labeled recap rather than analysis, closed with "you need to diagnose what changed" (pushing the analysis back onto the student), and had no way to answer the user's actual questions — was the high score just because it was multiple-choice, and what *kind* of questions (recognition/recall vs. conceptual synthesis/abstract reasoning) does this student actually perform well or badly on.
+
+### Root cause
+The chat's context had `question_type` but never the actual `question_text` — there's no schema field anywhere for "cognitive demand" (memorization vs. creative vs. abstract), so the only way to judge that dimension at all is to give the model the real question wording and let it reason about it directly, which it was never given.
+
+### Fix
+`questions` query in `_build_system_prompt()` now also selects `question_text` and `difficulty` (previously only `question_type`), and `_format_evaluations()` includes the actual question text inline with each answer. Rewrote the system prompt to: (1) require the model to explicitly address whether an MCQ/free-text score gap is explained by format (recognition is a fundamentally easier task than production) rather than leaving it unexamined, (2) use the real question text to judge cognitive demand and state directly which kinds of questions this student is actually strong/weak at, and (3) explicitly forbid ending with "figure out what changed" — it must commit to its best-supported explanation and give remedies tied to specific evidence, not generic advice.
+
+### Verified
+`python -c "import app.main"` clean. Retested live twice more:
+1. A "capable but inconsistently engaged learner" response — correctly separated concept mastery (low recall, specific missing concepts named) from behavioural patterns (start delay, distraction ratio, revision count) for the first time, and gave a real diagnosis instead of deflecting.
+2. Asked specifically about the wording decline — response correctly avoided the ESL trap (explicitly said the low score meant unclear expression, not language background), tied it to the behavioural data (drafting under distraction rather than composing first), and closed with a concrete action ("outline for 30 seconds before typing") instead of generic advice.
+
+User's own assessment: "good for now." Judged as genuinely usable for the report at this point — the mechanism (grounded analysis, not raw-data narration) is demonstrated.
+
+**One open item, not yet resolved:** both retests still referenced a "wording 100 / flawless" result for the July 9 answer — the same one originally identified as the MCQ. Per the phase-1 fix, an MCQ-labeled entry should no longer expose a wording field in context at all, so this is either (a) evidence the backend still wasn't restarted for at least one of these tests, or (b) a genuinely different July 9 answer than the MCQ (the original SQL query surfaced two answers submitted seconds apart on that date). Flagged to the user directly; not independently confirmed either way. Also flagged directly to the user: with only 3 evaluated answers total, some of the chat's causal narratives (e.g. attributing July 9's quality to "deliberate structure, even if you don't remember doing it") are plausible-sounding speculation the data doesn't actually support yet — a real limitation of the current data volume, not something fixable by further prompt changes.
+
+---
+
+## Phase Marker: Research/Demo Build Complete
+
+**Date:** 2026-07-16
+
+This closes out the initial research/demo phase of the project — the point where the core ideas (encrypted PII, RAG-based question generation, rule-based behavioural tracking, a deterministic weighted scoring model, and now a data-grounded evaluation chat) all exist and have been exercised at least once against real data. This same pass fixed several facts in `COMPONENTS.md` that had drifted since the 2026-07-09 provider swap-back to Claude (it still said Gemini was live for generation/evaluation/goal-chat, and that `anthropic` was unused — both backwards) and flagged the still-unpinned `starlette` dependency that caused this session's startup crash.
+
+Work from here is framed as hardening this into an actual production-ready application rather than proving the core mechanisms out for the first time — e.g. the still-open items noted throughout this log (`starlette` pin, unused dependencies, the unresolved MCQ/wording data question above, the small-sample-size caveat on the evaluation chat, deferred charts/diagrams, deferred instructor-facing view) are the natural next punch list, not new discoveries.
+
+---
+
+## Evaluation Chat: Layout Fix, Markdown Rendering, Structured Charts
+
+**Date:** 2026-07-19
+
+### Symptom 1 — chat unusable as the conversation grew
+The evaluation chat page used `minHeight` on its page/main/chat-column containers instead of a fixed `height`. As messages accumulated, the whole page grew taller rather than the message list scrolling within a fixed frame, so the send button kept sliding further down the page — a real usability problem for a live demo.
+
+### Fix 1
+Changed `page`/`main`/`chatColumn` to fixed `height` values (not `minHeight`), added `overflow: hidden` at the page level so the browser's own scrollbar never engages, and set `minHeight: 0` on the flexed `messagesBox` — the standard fix for a flex child that otherwise refuses to shrink below its content size and defeats a parent's fixed height. `chatHeader` and `inputRow` marked `flexShrink: 0` so they never get squeezed. Only `messagesBox` scrolls now, and it always does so within a stable frame.
+
+### Symptom 2 — Markdown shown as literal asterisks/dashes
+The model's replies use `**bold**` and `- bullet` Markdown, which rendered as literal characters in the chat bubbles (plain string in a `<div>`).
+
+### Fix 2
+Added `renderMarkdownLite()` in `EvaluationPage.tsx` — a small hand-written renderer for exactly the subset of Markdown the model actually produces (bold spans, bullet lists, paragraphs), deliberately not a real Markdown library. No new dependency to risk breaking this close to a deadline.
+
+### Symptom 3 (feature, not a bug) — user wanted charts back
+After the earlier decision to skip charts/diagrams for cost reasons, the user reversed that call and asked for the evaluation chat to produce charts, diagrams, and predictions — but explicitly chose the riskier of two designs offered (the model deciding what chart to show per-message, over a fixed always-visible charts panel computed deterministically), understanding and accepting that trade-off.
+
+### Implementation
+- `CHAT_OUTPUT_SCHEMA` (`evaluation_chat.py`) forces the `/chat` response into `{"reply_text": str, "chart": {...}}` via `output_config.format.json_schema` — the same structured-output mechanism `evaluation.py`/`generation.py` already use for scoring, not free-text parsing. `chart.kind` is `"line"` (ordered sequence), `"bar"` (discrete categories), or `"none"`.
+- System prompt initially said to chart "whenever a visual genuinely helps" — live-tested with a question comparing 4 dated scores, and the model still returned `kind: "none"`, judging it too conservatively. Rewrote to explicitly require a chart whenever 2+ comparable numbers are discussed, only allowing `"none"` for genuinely non-quantitative answers.
+- Chart data is deliberately **not persisted** — only `reply_text` goes into `evaluation_chat_history` (keeps the conversation history clean prose for the model's own future context); charts render for live-session messages only, not reconstructed from `/history` on reload. A disclosed scope cut given the time available, not an oversight.
+- New `models/progress.py` types: `ChatChartSeries`, `ChatChart`, and `ChatMessageResponse.chart: ChatChart | None`.
+- New `frontend/src/components/EvalChart.tsx` — plain SVG line/bar rendering, no new npm dependency. Followed the `dataviz` skill's procedure: ran `scripts/validate_palette.js` against this project's own accent colors first — the dark-mode variant failed the lightness-band check — so chart series use the skill's own validated default categorical palette (blue/green/magenta/yellow) instead of forcing an unvalidated brand color through. Native SVG `<title>` elements provide hover tooltips (zero custom JS, zero positioning logic to get wrong under time pressure).
+
+### Verified
+`python -c "import app.main"` clean, `.format()` on the rewritten system prompt template checked directly for brace-escaping correctness (added literal `{{"reply_text": ...}}` JSON examples inside the template, which needed careful double-brace escaping to not break Python's `str.format()`). `tsc --noEmit` clean. Live-tested: the first prompt version under-charted (confirmed a real gap, not a mechanism failure) and was tightened; not yet re-tested against the tightened prompt at the time of this entry — that's the next real check.
 
 ---

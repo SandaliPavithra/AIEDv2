@@ -110,4 +110,67 @@ Plain-language, day-by-day record of what actually got done — kept so the rese
 - Made the fact-checking AI optional — if it's not configured, or if it fails for any reason, grading still goes through instead of the whole feature breaking.
 - Added the AI explanation for wrong multiple-choice answers, so instead of just "here's the correct answer," students now get a short explanation of why each option they didn't pick was right or wrong.
 
-**Picking back up at 5PM.**
+---
+
+## Day 5 — 2026-07-13
+
+**Built:**
+- Gave the very first screen visitors see (before logging in) a fully animated, colourful moving background behind the main heading, instead of a plain flat colour.
+- Made the heading text automatically switch between solid black and solid white, moment by moment, so it always stays readable against whatever colour is moving behind it right then — a hard on/off switch, not a soft blend.
+- Made that entire animated background (and the readable-text trick riding on top of it) automatically flip to a light/dark-swapped version when the light/dark mode switch is toggled, instead of always looking the same no matter the setting.
+- Made the heading bigger and bolder, switched it to the same font used everywhere else in the app, put it in capitals, removed one word ("Recommendation") from the sentence, and gave the page more room so it wraps across fewer, wider lines.
+
+**Problems hit:**
+- The first version of the animated background used a CSS shortcut that, it turned out, wasn't actually visible in the browser at all — a subtle mistake in how the layers were stacked meant the plain background colour was quietly painting over the animation and hiding it completely.
+- After fixing that, the animation itself wasn't moving — a second CSS feature used to animate it isn't actually supported the way it looked like it should be, in the browser being used to test.
+- The "readable text over a moving background" effect first came out as a soft rainbow-ish blend instead of a clean black-or-white switch — traced to a hard limit in what CSS itself is capable of here, not a tuning problem, no amount of adjusting the settings could have fixed it.
+- After moving that effect to a more capable animation technique (the kind normally used for 3D graphics/games) to fix the above, resizing the browser window could leave the heading rendered as two overlapping, misaligned copies of itself until the page was fully reloaded — traced to two different parts of the page each reacting to a resize independently, slightly out of step with each other.
+
+**Fixed:**
+- Rebuilt the animated background so it actually renders in the browser being used to test, instead of being invisible.
+- Replaced the non-moving background technique with one that actually animates.
+- Rebuilt the "stay readable against anything behind it" effect using the same animation engine that draws the moving background itself, instead of layering separate visual tricks on top of each other — now a true hard black/white switch, no in-between colours.
+- Fixed the resizing bug by having the one part of the page that draws the heading measure its own size directly, at the exact moment it redraws, instead of two separate parts of the page each keeping their own out-of-sync copy of that measurement.
+- Confirmed the light/dark switch now flips the animated background along with everything else on the page, instead of the background always looking the same regardless of the switch.
+
+---
+
+## Day 6 — 2026-07-16
+
+**Built:**
+- Two new scoring measurements, added to the existing grading system: whether an answer rambles on longer than it needs to, and whether it looks like it was copied word-for-word from the source material rather than written in the student's own words. Both computed instantly with no AI involved, so they cost nothing extra to run.
+- Extended the existing per-topic progress tracking to also average these two new measurements over time, alongside everything it already tracked.
+- Built the actual "Evaluation" tab for the first time — a chat-style page where you can ask questions about your own results and get a real, grounded answer back, instead of just seeing raw numbers.
+
+**Problems hit:**
+- The backend refused to start at all at the beginning of the day — traced to two different, unrelated pieces of installed software on this machine quietly disagreeing about which version of a shared underlying library to use, so the actual application code was never the problem.
+- The very first version of the evaluation chat gave a shallow, misleading answer: it treated a multiple-choice question's score as if it proved deep understanding, sitting right next to genuinely graded written answers, and made the two look directly comparable when they aren't. It also never looked at the hesitation/timing/distraction data at all, despite that being the whole reason that data gets collected in the first place.
+- Asked to go deeper, the second version was better but still just described the numbers back rather than genuinely reasoning about them — and it ended by telling the student to go figure out what changed, instead of actually figuring it out itself.
+- The AI also didn't have access to the actual wording of each question, so it had no way to tell whether the student is naturally better at simple recall-style questions versus ones that require connecting several ideas together.
+
+**Fixed:**
+- Found and corrected the exact mismatched library versions causing the startup crash.
+- Rebuilt the evaluation chat so it clearly separates multiple-choice correctness (a fact) from genuinely graded written answers (a judgement), and never treats them as equally meaningful evidence of understanding.
+- Gave the chat access to the actual hesitation/timing/distraction data for the first time, so it can now speak to focus and pacing, not just scores.
+- Gave the chat the real wording of each question, so it can reason about what *kind* of thinking a question demanded, not just tally up numbers.
+- Rewrote its instructions so it has to commit to an actual explanation and specific, concrete next steps, instead of handing the diagnosis back to the student.
+- Went through this markdown-file cleanup pass and fixed several facts that had drifted out of date since earlier in the project — leftover mentions of a free AI service that was actually swapped back to a paid one over a week ago, a couple of dependencies the code no longer actually uses, and a route list that hadn't been updated as new pages were added.
+
+---
+
+## Day 7 — 2026-07-19
+
+**Built:**
+- Ahead of the final presentation: fixed the evaluation chat so long conversations no longer push the send button off the bottom of the screen — the message list now scrolls on its own inside a fixed-size window, the way any normal chat app works.
+- Made the chat's replies actually render properly — bold text and bullet points used to show up as literal asterisks and dashes; now they display formatted, like real text.
+- Gave the evaluation chat the ability to show actual charts, not just written answers — ask it to compare your scores or show a trend, and it now draws a real chart alongside its explanation, built only from your real, already-computed numbers.
+
+**Problems hit:**
+- The first version of the chart feature technically worked but was too shy about actually using it — asked a question comparing four different scores across several dates, and it still just wrote a paragraph instead of drawing anything.
+
+**Fixed:**
+- Rewrote its instructions to stop treating a chart as optional whenever there's more than one number worth comparing — it was told plainly to default to showing one instead of talking around it.
+
+**Where things stand:** backend is stable and considered done for the presentation. Remaining work is frontend polish only, with the presentation later today — enough runway left to make UI adjustments without touching anything that already works.
+
+**Where things stand:** this closes out the initial research/demo build of the project. Everything from here on is about turning what already works into an actual production-ready application, rather than proving the core ideas out for the first time.

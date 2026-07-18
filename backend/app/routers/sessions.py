@@ -343,6 +343,8 @@ async def _snapshot_progress(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
                 "avg_raw_score": stats["avg_raw_score"],
                 "avg_final_score": stats["avg_final_score"],
                 "avg_time_modifier": stats["avg_time_modifier"],
+                "avg_conciseness": stats["avg_conciseness"],
+                "avg_copy_similarity": stats["avg_copy_similarity"],
                 "dominant_behaviour": stats["dominant_behaviour"],
                 "questions_attempted": stats["questions_attempted"],
                 "sessions_completed": stats["sessions_completed"],

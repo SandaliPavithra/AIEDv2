@@ -1,11 +1,45 @@
 # Official Backend Design — AI Education Platform
-**Version:** 3.4  
+**Version:** 3.7  
 **Last Updated:** July 2026  
 **Status:** Approved for development
 
 ---
 
 ## Changelog
+
+### v3.7 — 2026-07-19
+
+| Change | Detail |
+|---|---|
+| **Added** | Structured chart output on the evaluation chat — `POST /evaluation-chat/chat` now forces Claude into a JSON schema response (`reply_text` + optional `chart`), the same `output_config.format.json_schema` mechanism already used for scoring elsewhere, instead of parsing free-text for chart-like content. `chart.kind` is `"line"`, `"bar"`, or `"none"`; the system prompt was tightened to default to including a chart whenever 2+ comparable numbers are being discussed, after live testing showed the first version was too conservative and skipped charts even for genuinely comparable data. |
+| **Added** | `frontend/src/components/EvalChart.tsx` — plain-SVG line/bar rendering (no new npm dependency), using the `dataviz` skill's validated categorical palette. The project's own accent colors were checked with `validate_palette.js` and failed the dark-mode lightness-band check, so the skill's proven default palette is used for chart series instead of inventing one. |
+| **Fixed** | Evaluation chat page used `minHeight` instead of a fixed `height` on its layout containers, so the whole page grew with the conversation instead of the message list scrolling internally — the send button kept sliding off-screen as messages accumulated. Fixed with a `height`-constrained flex column + `minHeight: 0` on the flexed message list (the standard fix for flex children that otherwise refuse to shrink below their content size). |
+| **Added** | Lightweight Markdown rendering (`renderMarkdownLite` in `EvaluationPage.tsx`) for bold text and bullet lists in chat responses — no new dependency, handles only the subset of Markdown the model actually produces. |
+| **Note** | Chart data is intentionally not persisted — only `reply_text` is written to `evaluation_chat_history`, so charts render for live-session messages only and are not reconstructed after a page reload. Disclosed scope cut, not an oversight, made under real time pressure ahead of a deadline. |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
+
+### v3.6 — 2026-07-16
+
+| Change | Detail |
+|---|---|
+| **Added** | Evaluation-analysis chatbot — `POST /evaluation-chat/chat` + `GET /evaluation-chat/history` (`backend/app/routers/evaluation_chat.py`), new `/evaluation` frontend page. Every reply is grounded in the student's real `progress_snapshots` + recent `evaluations` rows, injected into the system prompt on every call — the model explains already-computed numbers, it never scores or judges from raw answer text itself. |
+| **Added** | `evaluation_chat_history` table — same shape and encryption as `goal_chat_history` (append-only, `role`/`content`, content encrypted). |
+| **Note** | Charts/diagrams over this same data (originally scoped alongside this) are still deferred — this phase is chat-only, per explicit request to skip diagrams for now. |
+| **Fixed** | First real chat response blended MCQ correctness (a flat 100/0 collapsed across every dimension) with free-text rubric scores as if equally meaningful, and never queried `answer_behaviour` at all despite that being the whole documented point of tracking it (see "Behavioural Tracking & Privacy" above). System prompt now labels every data point by question_type, explicitly forbids treating MCQ as a depth-of-understanding signal, includes a rubric legend (esp. clarifying `wording_score` is bias-neutral by design, not an English-fluency test), and joins in `answer_behaviour_decrypted` per answer. |
+| **Reason** | Chat costs a real Claude call per message (`CLAUDE_CHATBOT_MODEL`, same model as the goal-setting chat) — deferred earlier in the same day for cost reasons, then explicitly requested anyway once cost was acknowledged. |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
+
+### v3.5 — 2026-07-16
+
+| Change | Detail |
+|---|---|
+| **Added** | Two new deterministic (non-AI) evaluation dimensions: `conciseness_score` and `copy_similarity_score` on `evaluations`, plus their per-topic averages (`avg_conciseness`, `avg_copy_similarity`) on `progress_snapshots`. See "Conciseness & Copy-Detection Scoring" under Scoring Model below. |
+| **Note** | Scoped as the first phase of the planned Evaluation Dashboard (self-facing charts + a grounded Q&A chat over this data). The chat piece needs a paid Claude call per message — deferred until budget allows, same reasoning as the provider swap above. This phase is backend-only: no new endpoint or frontend page yet. |
+| **Reason** | Requested as part of the Evaluation Dashboard, with an explicit requirement that these be real computed scores — not an AI asked to "vibe-judge" a student from raw data — matching how every other scoring dimension in this document already works. |
+
+Full implementation detail: `TECHNICAL_LOG.md`.
 
 ### v3.4 — 2026-07-07
 
@@ -201,6 +235,37 @@ Final Score     = Raw Score × Time Modifier
 | Long answer | Hard | 8 minutes |
 
 Expected times are hardcoded at launch and configurable after real usage data is collected.
+
+### Conciseness & Copy-Detection Scoring (computed on backend, no AI)
+
+Both are separate dimensions shown alongside the existing breakdown — neither feeds into Raw Score or Final Score. Deliberately kept out of that formula so the already-implemented, already-tested scoring model stays untouched; folding them in would require rebalancing weights that are currently load-bearing for `overall_score`/`progress_snapshots`.
+
+**Conciseness** — measures brevity of expression, not completeness. An answer that's too short to cover the material is already penalised by `recall_score`, so this only penalises going past a reasonable upper bound; it never penalises being short.
+
+| Question type | Difficulty | Expected max words |
+|---|---|---|
+| MCQ | Any | N/A — not scored (a selected option isn't a conciseness question) |
+| Short answer | Easy | 40 |
+| Short answer | Medium | 50 |
+| Short answer | Hard | 60 |
+| Long answer | Easy | 120 |
+| Long answer | Medium | 160 |
+| Long answer | Hard | 200 |
+
+```
+word_count <= expected_max  →  conciseness_score = 100
+word_count >  expected_max  →  conciseness_score = max(0, 100 × (1 − (word_count − expected_max) / expected_max))
+```
+
+**Copy-detection** — a containment measure (not symmetric similarity): what fraction of the answer's own 8-word runs also appear verbatim in the source chunk. An 8-word verbatim match is a strong signal of direct copying; shorter windows (3-4 words) would flag too many innocent shared-terminology matches. Symmetric similarity (e.g. `difflib.SequenceMatcher` over the whole chunk) was rejected — copying one sentence out of an 800-1000 token chunk would still register as "low similarity" against the chunk as a whole, missing the exact case this exists to catch.
+
+```
+answer_ngrams = set of every consecutive 8-word run in the answer
+chunk_ngrams  = set of every consecutive 8-word run in the source chunk
+copy_similarity_score = 100 × |answer_ngrams ∩ chunk_ngrams| / |answer_ngrams|
+```
+
+Answers shorter than 8 words have no 8-word run to test — scored `None` ("not enough text to assess"), not `0`, so a short-but-original answer isn't misread as "definitely not copied" when it simply couldn't be tested. MCQ is also `None` — a selected option is copied by construction, so the score wouldn't mean anything.
 
 ### Behaviour label rules (computed on backend, no AI)
 
@@ -594,6 +659,8 @@ Per-question evaluation output from Sonnet 4.6 and xAI Grok. Permanent. Records 
 | `evaluation_top_p` | `numeric(3,2)` | Top P used for this evaluation call |
 | `checker_model` | `varchar(100)` | e.g. `grok-2` |
 | `created_at` | `timestamptz` | |
+| `conciseness_score` | `numeric(5,2)` | 0–100, `NULL` for MCQ. See "Conciseness & Copy-Detection Scoring" above. Not part of raw_score/final_score. |
+| `copy_similarity_score` | `numeric(5,2)` | 0–100, `NULL` for MCQ or answers under 8 words. Same section. Not part of raw_score/final_score. |
 
 ---
 
@@ -637,6 +704,8 @@ Pre-aggregated scores per topic per student. Computed after every completed sess
 | `questions_attempted` | `int` | |
 | `sessions_completed` | `int` | |
 | `goal_proximity` | `numeric(5,2)` | 0–100, how close to target score for this topic |
+| `avg_conciseness` | `numeric(5,2)` | Average of `evaluations.conciseness_score` for this topic, `NULL`-safe |
+| `avg_copy_similarity` | `numeric(5,2)` | Average of `evaluations.copy_similarity_score` for this topic, `NULL`-safe |
 
 **Design note:** Both `avg_raw_score` and `avg_final_score` stored separately so the dashboard can surface distinct insights — e.g. "you know this material well but you're consistently slow on hard questions."
 

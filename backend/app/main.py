@@ -10,6 +10,7 @@ from app.routers import (
     answers,
     auth,
     documents,
+    evaluation_chat,
     evaluations,
     goals,
     logs,
@@ -83,6 +84,7 @@ app.include_router(topics.router,          prefix="/topics",          tags=["top
 app.include_router(sessions.router,        prefix="/sessions",        tags=["sessions"])
 app.include_router(answers.router,         prefix="/answers",         tags=["answers"])
 app.include_router(evaluations.router,     prefix="/evaluations",     tags=["evaluations"])
+app.include_router(evaluation_chat.router, prefix="/evaluation-chat", tags=["evaluation-chat"])
 app.include_router(goals.router,           prefix="/goals",           tags=["goals"])
 app.include_router(recommendations.router, prefix="/recommendations", tags=["recommendations"])
 app.include_router(progress.router,        prefix="/progress",        tags=["progress"])

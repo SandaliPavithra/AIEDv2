@@ -20,6 +20,8 @@ class EvaluationResponse(BaseModel):
     raw_score: Decimal
     time_modifier: Decimal
     final_score: Decimal
+    conciseness_score: Decimal | None = None
+    copy_similarity_score: Decimal | None = None
     concepts_covered: list[str]
     concepts_missed: list[str]
     feedback_text: str

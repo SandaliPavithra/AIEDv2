@@ -8,6 +8,7 @@ import CallbackPage from './pages/CallbackPage.tsx';
 import DashboardPage from './pages/DashboardPage.tsx';
 import GenerationPage from './pages/GenerationPage.tsx';
 import UploadPage from './pages/UploadPage.tsx';
+import EvaluationPage from './pages/EvaluationPage.tsx';
 import AppShell from './components/AppShell.tsx';
 import { ThemeProvider } from './contexts/ThemeContext.tsx';
 import './index.css';
@@ -25,6 +26,7 @@ createRoot(document.getElementById('root')!).render(
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/generate" element={<GenerationPage />} />
             <Route path="/upload" element={<UploadPage />} />
+            <Route path="/evaluation" element={<EvaluationPage />} />
           </Routes>
         </AppShell>
       </BrowserRouter>
