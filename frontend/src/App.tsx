@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { Canvas } from '@react-three/fiber'
 import { useNavigate } from 'react-router-dom';
 import ThemeToggle from './components/ThemeToggle';
 import ShaderBackground from './components/ShaderBackground';
@@ -10,8 +11,14 @@ export default function App() {
   const titleRef = useRef<HTMLHeadingElement>(null);
 
   return (
+    
     <div style={{ position: 'relative', zIndex: 0, minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', transition: 'background 0.35s ease' }}>
       <ShaderBackground title={TITLE_TEXT} titleRef={titleRef} />
+      <Canvas>
+        <mesh>
+          <boxGeometry />
+        </mesh>
+      </Canvas>
       <div style={{ position: 'fixed', top: 16, right: 16 }}>
         <ThemeToggle />
       </div>
