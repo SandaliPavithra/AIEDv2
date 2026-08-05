@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { EvaluationResult, Question } from '../../hooks/useQuizSession';
 
 interface QuestionCardProps {
@@ -32,12 +32,28 @@ export default function QuestionCard({
 }: QuestionCardProps) {
   const [answerText, setAnswerText] = useState('');
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const leftRef = useRef<HTMLDivElement>(null);
+  const [leftHeight, setLeftHeight] = useState<number | null>(null);
 
   // Reset local answer state when a new question arrives.
   useEffect(() => {
     setAnswerText('');
     setSelectedOption(null);
   }, [question.id]);
+
+  // Mirrors the question column's actual rendered height onto the eval panel,
+  // so the panel's bottom edge always lines up with the question column's
+  // bottom edge (e.g. the submit button) instead of drifting apart based on
+  // which one's content happens to be longer.
+  useLayoutEffect(() => {
+    const el = leftRef.current;
+    if (!el) return;
+    const update = () => setLeftHeight(el.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const isMcq = question.question_type === 'mcq' && !!question.options;
   const isLongAnswer = question.question_type === 'long_answer';
@@ -73,7 +89,7 @@ export default function QuestionCard({
 
   return (
     <div style={s.layout}>
-      <div style={s.left}>
+      <div ref={leftRef} style={s.left}>
         <div style={s.progress}>Question {questionNumber} of {totalQuestions}</div>
         <p style={s.questionText}>{question.question_text}</p>
         {citation && <p style={s.citation}>{citation}</p>}
@@ -142,16 +158,23 @@ export default function QuestionCard({
         </button>
       </div>
 
-      <div className={`eval-panel${answered ? ' eval-panel--active' : ''}`}>
+      <div
+        className={`eval-panel${answered ? ' eval-panel--active' : ''}`}
+        style={leftHeight ? { height: leftHeight } : undefined}
+      >
         {reveal ? (
           <>
             <div className="eval-panel__ring" aria-hidden="true" />
             <div className="eval-panel__face">
-              <span style={s.evalScore}>
-                {Math.round(reveal.final_score)}
-                <span style={s.evalScoreSuffix}>/100</span>
-              </span>
-              <p style={s.evalFeedback}>{reveal.feedback_text}</p>
+              <div className="eval-panel__content">
+                <span style={s.evalScore}>
+                  {Math.round(reveal.final_score)}
+                  <span style={s.evalScoreSuffix}>/100</span>
+                </span>
+                <div className="eval-panel__feedback-scroll">
+                  <p style={s.evalFeedback}>{reveal.feedback_text}</p>
+                </div>
+              </div>
             </div>
           </>
         ) : (
@@ -165,13 +188,12 @@ export default function QuestionCard({
 const s: Record<string, React.CSSProperties> = {
   layout: {
     display: 'flex',
-    alignItems: 'stretch',
+    alignItems: 'flex-start',
     gap: 64,
-    width: 960,
     maxWidth: '94vw',
   },
   left: {
-    flex: 1,
+    flex: '0 1 700px',
     minWidth: 0,
     display: 'flex',
     flexDirection: 'column',
@@ -215,7 +237,6 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 14.5,
     lineHeight: 1.65,
     color: 'var(--text-secondary)',
-    margin: 0,
     padding: '0 8px',
   },
   evalPlaceholder: {

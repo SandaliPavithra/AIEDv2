@@ -81,6 +81,7 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 'calc(100vh - 72px)',
-    padding: '32px 16px',
+    padding: '32px 24px',
+    boxSizing: 'border-box',
   },
 };
