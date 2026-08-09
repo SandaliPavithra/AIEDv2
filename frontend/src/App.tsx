@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useNavigate } from 'react-router-dom';
 import {Mesh} from 'three';
@@ -46,10 +46,24 @@ const Cube = ({ position, size, color}: CubeProps) => {
 }
 
 const Sphere = ({ position, size, color}: SphereProps) => {
+  const ref = useRef<Mesh>(null)
+  const [isHovered, setIsHovered] = useState(false);
+  const [isClicked, setIsClicked] = useState(false);
+  useFrame((state, delta) => {
+    if (ref.current) {
+      const speed = isHovered ? 1 : 0.2; // Adjust speed based on hover state
+     ref.current.rotation.y += delta * speed
+   }
+  })
   return(
-    <mesh position={position}>
+    <mesh 
+    position={position} ref={ref} 
+    onPointerEnter={(event) => (event.stopPropagation(), setIsHovered(true))} /*stop propagataion makes the animation only effect the mesh*/
+    onPointerLeave={() => setIsHovered(false)}
+    onClick={() => setIsClicked(!isClicked)}
+    scale={isClicked ? 1.5 : 1}> 
       <sphereGeometry args={size}/>
-      <meshStandardMaterial color={color} wireframe/>
+      <meshStandardMaterial color={isHovered ? 'hotpink' : "lightblue"} wireframe/>
     </mesh>
   )
 }
@@ -81,8 +95,8 @@ export default function App() {
             < Cube position={[-1, 0, 0]} size={[1, 1, 1]} color={"blue"} />
           </group> */}
           {/*<Cube position={[0, 0, 0]} size={[1, 1, 1]} color={"blue"} />*/}
-          <Sphere position={[0, 0, 0]} size={[1, 30, 30]} color={"orange"} />
-          <Torus position={[2, 0, 0]} size={[0.5, 0.1, 30, 30]} color={"orange"} />
+          <Sphere position={[0, 0, 0]} size={[3, 30, 30]} color={"orange"} />
+          {/*<Torus position={[2, 0, 0]} size={[0.5, 0.1, 30, 30]} color={"orange"} /> */}
       </Canvas>
       <div style={{ position: 'fixed', top: 16, right: 16 }}>
         <ThemeToggle />
