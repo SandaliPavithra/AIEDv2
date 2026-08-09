@@ -14,12 +14,27 @@ type CubeProps ={
   color: string;
 }
 
+type SphereProps ={
+  position: [number, number, number];
+  size: [number, number, number];
+  color: string;
+}
+
+type TorusProps ={
+  position: [number, number, number];
+  size: [number, number, number, number];
+  color: string;
+}
+
 {/*With annotation, Typescript finally understands the parameters */}
 const Cube = ({ position, size, color}: CubeProps) => {
     const ref = useRef<Mesh>(null)
   useFrame((state, delta) => {
    if (ref.current) {
      ref.current.rotation.x += delta
+     ref.current.rotation.y += delta
+     ref.current.rotation.z = Math.sin(state.clock.elapsedTime) * 2
+     console.log(state.clock.elapsedTime)
    }
   })
   return (
@@ -28,6 +43,24 @@ const Cube = ({ position, size, color}: CubeProps) => {
       <meshStandardMaterial color={color}/>
     </mesh>
   );
+}
+
+const Sphere = ({ position, size, color}: SphereProps) => {
+  return(
+    <mesh position={position}>
+      <sphereGeometry args={size}/>
+      <meshStandardMaterial color={color} wireframe/>
+    </mesh>
+  )
+}
+
+const Torus = ({ position, size, color}: TorusProps) => {
+  return(
+    <mesh position={position}>
+      <torusGeometry args={size}/>
+      <meshStandardMaterial color={color}/>
+    </mesh>
+  )
 }
 
 export default function App() {
@@ -47,7 +80,9 @@ export default function App() {
             < Cube position={[1, 2, 0]} size={[1, 1, 1]} color={"red"} />
             < Cube position={[-1, 0, 0]} size={[1, 1, 1]} color={"blue"} />
           </group> */}
-          <Cube position={[0, 0, 0]} size={[1, 1, 1]} color={"blue"} />
+          {/*<Cube position={[0, 0, 0]} size={[1, 1, 1]} color={"blue"} />*/}
+          <Sphere position={[0, 0, 0]} size={[1, 30, 30]} color={"orange"} />
+          <Torus position={[2, 0, 0]} size={[0.5, 0.1, 30, 30]} color={"orange"} />
       </Canvas>
       <div style={{ position: 'fixed', top: 16, right: 16 }}>
         <ThemeToggle />
