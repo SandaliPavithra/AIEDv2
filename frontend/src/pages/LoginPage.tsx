@@ -1,6 +1,5 @@
 import { useState, FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import ThemeToggle from '../components/ThemeToggle';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -46,9 +45,6 @@ export default function LoginPage() {
 
   return (
     <div style={s.page} className="show-cursor">
-      <div style={{ position: 'fixed', top: 16, right: 16 }}>
-        <ThemeToggle />
-      </div>
       <form style={s.container} onSubmit={handleSubmit}>
         <h1 style={s.title}>Sign In</h1>
 

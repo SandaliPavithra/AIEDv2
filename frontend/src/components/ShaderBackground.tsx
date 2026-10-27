@@ -1,6 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
-import { useTheme } from '../contexts/ThemeContext';
 
 interface TitleLayout {
   rect: DOMRect;
@@ -121,8 +120,6 @@ export default function ShaderBackground({ title, titleRef }: ShaderBackgroundPr
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestTitleRef = useRef(title);
   latestTitleRef.current = title;
-  const { isDark } = useTheme();
-  const invertUniformRef = useRef<{ value: number } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -149,10 +146,9 @@ export default function ShaderBackground({ title, titleRef }: ShaderBackgroundPr
       xScale: { value: 1.0 },
       yScale: { value: 0.5 },
       distortion: { value: 0.05 },
-      invert: { value: isDark ? 0 : 1 },
+      invert: { value: 0 },
       textMask: { value: textTexture },
     };
-    invertUniformRef.current = uniforms.invert;
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute(
@@ -224,12 +220,6 @@ export default function ShaderBackground({ title, titleRef }: ShaderBackgroundPr
       renderer.dispose();
     };
   }, [titleRef]);
-
-  useEffect(() => {
-    if (invertUniformRef.current) {
-      invertUniformRef.current.value = isDark ? 0 : 1;
-    }
-  }, [isDark]);
 
   return (
     <canvas

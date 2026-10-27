@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ThemeToggle from '../components/ThemeToggle';
 
 interface Topic {
   id: string;
@@ -186,7 +185,6 @@ export default function UploadPage() {
       <header style={s.header}>
         <span style={s.headerTitle}>Upload Textbook</span>
         <div style={s.headerActions}>
-          <ThemeToggle />
           <button style={s.backBtn} onClick={() => navigate('/dashboard')}>Back to Dashboard</button>
         </div>
       </header>

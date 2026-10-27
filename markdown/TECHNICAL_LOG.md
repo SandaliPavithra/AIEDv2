@@ -1113,3 +1113,267 @@ After the earlier decision to skip charts/diagrams for cost reasons, the user re
 `python -c "import app.main"` clean, `.format()` on the rewritten system prompt template checked directly for brace-escaping correctness (added literal `{{"reply_text": ...}}` JSON examples inside the template, which needed careful double-brace escaping to not break Python's `str.format()`). `tsc --noEmit` clean. Live-tested: the first prompt version under-charted (confirmed a real gap, not a mechanism failure) and was tightened; not yet re-tested against the tightened prompt at the time of this entry — that's the next real check.
 
 ---
+
+## 2026-10-27 — Removed frosted-glass coil around landing-page king
+
+### Change
+The user asked to remove the transparent spring rendered around the king piece on the landing page. Deleted `<SpiralGlass />` from `frontend/src/App.tsx` and deleted the now-unused `frontend/src/components/SpiralGlass.tsx` (procedural `TubeGeometry` helix with a `transmission={1}` physical material, sized off the king glb's bounding box). `KingModel` is untouched.
+
+### Verified
+`tsc --noEmit` clean. Visual check pending in the user's running dev server.
+
+---
+
+## 2026-10-27 — Landing-page king: slow idle spin
+
+### Change
+The user asked for the king to keep moving slowly. `KingModel.tsx` now has `IDLE_SPIN_SPEED = 0.25` rad/s (~25s per revolution). The coast after a drag release no longer decelerates to zero; the same `FRICTION` rate pulls the velocity toward the idle speed and holds it there. Velocity starts at the idle speed, so the piece turns from first render. Dragging still takes direct control.
+
+### Verified
+`tsc --noEmit` clean. Visual check pending in the user's running dev server.
+
+---
+
+## 2026-10-27 — Landing-page king: Cyberpunk LED billboards + holo crown
+
+### Change
+Based on the user's sketch, with three choices they made: abstract LED patterns (no text), a neon crown hologram above the cross, and CP2077 neon colors.
+- New `frontend/src/components/NeonBillboards.tsx`. It has two rings of curved panels (open `CylinderGeometry` arcs, 3 per ring): one around the head (`y = +0.36h`) and one around the neck (`y = +0.02h`). The rings orbit in opposite directions. Each panel uses a `ShaderMaterial` dot-matrix LED board with one of three patterns (diagonal stripes, equalizer bars, scan beam + sparkle), plus flicker, an occasional horizontal glitch slip, and a colored frame. Colors are magenta `#ff2a6d`, cyan `#05d9e8` and yellow `#f9f002`. `HoloCrown` is a drei `<Line>` zigzag plus a base ring that floats, spins, bobs and flickers above the cross.
+- These elements render in `KingModel`'s roll (lean) group but outside the spinning pivot, so they tilt with the piece while orbiting independently of its spin and drag.
+- All sizes derive from the piece's local bounding box (`pieceSize`). It is measured relative to the scene root, not with `Box3.setFromObject`, because the cached glb scene may already sit under the scaled/leaned parent groups (HMR), and a world-space box would then be wrong.
+
+### Decisions
+- No bloom: `@react-three/postprocessing` isn't installed, and adding a dependency for this wasn't asked for. The glow comes from bright diodes on a near-black, 0.92-alpha panel backing. That also keeps the panels readable on the light-mode bg, where additive/screen glow washes out (same lesson as the `.pl__dot-layer` light-mode CSS).
+- Crown uses magenta only. Cyan and yellow lines have too little contrast against the light-mode bg.
+
+### Verified
+`tsc --noEmit` clean. Couldn't screenshot: the only Playwright copy on disk is an incomplete install (no `package.json`). Ring heights and radii are estimated from the sketch, so a visual check in the user's dev server is still needed.
+
+---
+
+## 2026-10-27 — Billboards: lower ring moved to the piece's middle
+
+The user's screenshot showed the lower ring sitting just under the collar, above the visual middle. In `NeonBillboards.tsx`, `RINGS[1].y` went from `+0.02h` to `-0.06h`. Radius is unchanged. Visual check pending.
+
+---
+
+## 2026-10-27 — Billboards: more panels, smaller gaps
+
+At the user's request: the head ring went from 3 to 5 panels, the middle ring from 3 to 6, and `PANEL_FILL` from 0.7 to 0.9 (each gap is now 10% of its slot instead of 30%). Neighbouring panels still never share a color, including the wrap-around pair. `tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — Holo crown replaced with a 3D wrinkled-foil crown
+
+The user asked for a real 3D crown that looks like wrinkled aluminium foil, replacing the neon line hologram.
+- Removed `HoloCrown` (and the drei `Line` usage) from `NeonBillboards.tsx`. The new crown lives in `frontend/src/components/FoilCrown.tsx` and is rendered from `KingModel` next to `NeonBillboards`: in the lean group, outside the spin pivot.
+- Geometry is procedural, with no new asset or dependency. The body is a single thin sheet (foil has no thickness, so `DoubleSide`): a flared band whose top edge rises into 5 sharp points. Tip and rim details are `IcosahedronGeometry` balls on each point and a `TorusGeometry` rolled rim at the base.
+- Foil look: every vertex is pushed along its normal by 3-octave 3D value noise (broad folds, creases, fine crinkle). The material is `metalness: 1`, `roughness: 0.28` with `flatShading`, so each facet reflects the `studio` environment at its own angle. Noise is sampled from position, so duplicated seam vertices move identically and the mesh doesn't tear.
+- Each tip ball samples noise at its own crown-space offset, so the balls don't all crumple identically.
+
+`tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — Yellow foil crown, taller middle billboard ring
+
+- `FoilCrown.tsx`: material color `#d9dde3` → `#ffc61a`. With `metalness: 1` the base color tints the reflections themselves, so it reads as gold/yellow foil and the crumpled facets still work.
+- `NeonBillboards.tsx`: replaced the global `PANEL_HEIGHT_RATIO` with a per-ring `heightRatio`. The head ring stays at 0.07; the middle ring doubles to 0.14. `LED_ROWS` became `LED_PITCH_RATIO` (diode spacing as a fraction of piece height) and both rows and cols derive from it, so the taller ring gets more diode rows at the same diode size, not stretched dots.
+
+`tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — King: matte wood finish → glossy car paint
+
+The user asked for a glassy, reflective finish like the paint on a brand-new Porsche, not cheap-looking gloss.
+- `KingModel.tsx`: the matte constants and `useMemo` were replaced. Each glb `MeshStandardMaterial` is swapped for a `MeshPhysicalMaterial` with a two-layer automotive build: base coat `roughness 0.4` / `metalness 0.6` (soft metallic sheen) under `clearcoat 1` / `clearcoatRoughness 0.03` (crisp mirror reflections of the `studio` env). `envMapIntensity` is 1.2.
+- Why swap instead of mutating: `MeshStandardMaterial` has no clear coat, and the clear coat is what makes paint look like paint rather than chrome (full mirror) or plastic (single glossy layer).
+- The swap keeps `map`/`normalMap`/`aoMap` and the original color. It prefers `userData.originalColorHex` if the light-mode recolor effect already blacked out the cached scene, so dark mode still restores the real color. It runs in `useMemo` (during render) so the recolor effect, which runs after, sees the new materials. It's idempotent: already-physical materials are only re-tuned.
+
+`tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — King pulled back from camera
+
+The user asked to zoom out a bit. In `App.tsx`, the king group's `position` z went from 2 to 1 (further from the default camera at z=5). Scale is unchanged, so proportions are untouched and it's purely a perspective change.
+
+---
+
+## 2026-10-27 — User's CP2077 photos on the billboards
+
+The user asked to put the first 5 pictures from their `OneDrive\Pictures\Cyberpunk 2077` folder (sorted by name, as Explorer lists them) on the neon panels.
+- Source → copy: `Edit.png`, `photomode_01022026_092146.png`, `photomode_01022026_092637.png`, `photomode_01122025_213810.png`, `photomode_02022026_174116.png` → `frontend/public/billboards/cp2077-1..5.jpg`. Resized to 640px wide JPG q85 with System.Drawing (Pillow isn't installed): 35–61 KB each instead of ~3 MB PNGs. Originals untouched.
+- `NeonBillboards.tsx`: new image mode in the LED shader (`uUseImage`). The photo is sampled once per diode center (pixelated LED look) and saturation is boosted 1.6× so it reads as neon. Gaps between diodes stay 35% lit so the photo is still legible. Flicker and glitch still apply. A "cover" center-crop (`uImageUvScale`) fits the 16:9 photos to the panel's aspect without stretching.
+- The photos go on the middle ring (`IMAGE_RING = 1`, the taller one), panels 1–5. Panel 6 keeps its abstract pattern. Image panels use 3× finer diodes (`IMAGE_LED_DENSITY`), since at the standard pitch a photo would only be ~20 dots tall.
+- Textures load via drei `useTexture` (suspends inside the existing `<Suspense>`, preloaded at module load) with `SRGBColorSpace`, so `colorspace_fragment` outputs correct colors.
+
+`tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — Billboards: outline removed, photos on the head ring too
+
+- Removed the colored frame/outline from the LED panel shader (the `edge`/`frame` terms).
+- The user asked for "random" images on the top ring. I picked 5 at random (`Get-Random`) from the folder, excluding the first 5 already used: `photomode_06122025_131538`, `photomode_04022026_120042`, `photomode_07062026_105019`, `photomode_02022026_174148`, `photomode_14022026_103632` → `public/billboards/cp2077-6..10.jpg` (640px, q85, 25–34 KB).
+- `IMAGE_URLS`/`IMAGE_RING` became `RING_IMAGE_URLS` (one list per ring, indexed like `RINGS`). All URLs are loaded in one `useTexture` call and sliced back per ring. Head ring: all 5 panels show photos. Middle ring: 5 photos plus 1 abstract panel.
+
+`tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — Thin ring light above the top billboard strip
+
+`NeonBillboards.tsx` now renders a thin cyan (`#05d9e8`) LED ring around the piece. It sits just above the head strip's top edge (gap `0.012h`) at the same radius as the strip, and is static since a ring is rotationally symmetric. Two tori make it up: an unlit `MeshBasicMaterial` core (`toneMapped: false`, so it stays fully bright) plus a 4× thicker translucent halo tube that slowly "breathes" (opacity 0.14–0.26). The halo fakes the glow, since there's no bloom pass. It uses normal blending, not additive, so it doesn't wash out on the light-mode bg. Settings are the `RING_LIGHT_*` constants.
+
+`tsc --noEmit` clean. Visual check pending.
+
+---
+
+## 2026-10-27 — Neon glow (selective bloom) + ring light tweaks
+
+The user asked for a closer, slightly thicker ring light, and a glow on all the neon items that the background reacts to.
+
+### Changes
+- **New deps (exact-pinned):** `@react-three/postprocessing@3.2.2` and `postprocessing@6.39.5` (peer ranges fit fiber 9.7 / three 0.184).
+- **Ring light:** gap `0.012h → 0.004h`, thickness `0.0025h → 0.004h`. The fake halo tube was dropped (real bloom replaces it). The core is an HDR color (`× RING_LIGHT_INTENSITY 4`, breathing ±1).
+- **`App.tsx`:** `<Selection>` wraps the scene. `EffectComposer` runs `SelectiveBloom` and then `ToneMapping(ACES_FILMIC)`. Only meshes wrapped in `<Select enabled>` glow: all billboard panels and the ring light.
+- **Panel lights:** each billboard panel carries a `pointLight` in its palette color, riding with its ring. It sits on the panel's inner side at the panel's angular middle, so colored neon reflections sweep across the king's clear-coat paint. Intensity is scaled by distance² so it lands at ~`PANEL_LIGHT_STRENGTH` illuminance on the piece (world units, accounting for the 0.6 group scale).
+
+### Problems hit (screenshot-verified via playwright-core@1.56.1 + system Chrome against the user's running dev server)
+1. **The canvas had to become opaque.** Bloom can't spread glow onto transparent canvas pixels (alpha stays 0). The scene now paints `--bg` itself. But the ToneMapping pass would also tone-map that background off `--bg`, so `preToneMapped()` inverts three's ACES curve per channel (bisection) to land exactly on `#0a0a0a` / `#f0f0f0`.
+2. **A plain threshold `Bloom` washed out all of light mode.** The pre-compensated light bg is stored at ~1.8 linear, above the threshold. In dark mode it also put a big white halo on the king's glossy highlights and the foil crown, while the saturated magenta/cyan neon barely bloomed (low luminance). Fix: `SelectiveBloom` (threshold 0, `ignoreBackground`).
+3. **Light-mode panels looked milky.** The panels were 0.92 alpha, and 8% of a >1 background shows through as a veil. Fix: panels are fully opaque now. Light-mode bloom intensity is also lower (0.5 vs 1.6), since added light mostly pales things on a light bg.
+4. `SelectiveBloom` warns without a light. It's handed the ambient light ref; the neon materials are unlit, so the look doesn't change.
+
+Neon multipliers were retuned for selective bloom: abstract diodes ×2.5, photos ×1.4. `tsc --noEmit` clean, no new console errors (a pre-existing 404, likely the favicon).
+
+---
+
+## 2026-10-27 — Ring light fitted to the cross; slight crown glow
+
+The user asked for a slight gap between the top strip and the ring light, a ring radius that fits the area it surrounds (the narrow cross, not the strip), and a slight glow on the crown. Screenshot-verified in both themes, including 2× head close-ups.
+
+### Ring light
+- `KingModel.tsx` computes a **radius profile** (`radiusBetween(y0, y1)`): the widest the piece reaches from its spin axis between two heights, over 200 height slices, in pivot space. It's passed to `NeonBillboards`.
+  - **Bug found via debug logging:** the first, per-vertex version had mostly-empty slices, because the model is low-poly and a long straight section only has vertices at its two ends. It's now per-triangle: each triangle marks every slice it spans with its widest vertex (a slight overestimate on slanted faces, which only errs toward more clearance). Measured: cross ≈ 0.36, strip radius 0.77 (local units, h = 4.45).
+- Ring radius = widest point within `[y − tube, y + 0.03h]` (`RING_LIGHT_FIT_BAND_RATIO`) + `0.035h` clearance (`RING_LIGHT_CLEARANCE_RATIO`), giving ≈ 0.52.
+- Gap above the strip went `0.004h → 0.035h`. Less than that and the ring hid behind the strip: the camera looks up at the head, and the ring is now much narrower than the strip, so the strip's wall occludes it.
+
+### Crown glow
+- The first try put the crown in the shared neon `<Select>` with a higher threshold. Its HDR foil glints bloomed as hard as the neon in dark mode, and one `SelectiveBloom` can't weight objects differently.
+- Now the crown has a **second `SelectiveBloom`** in the same `EffectComposer`. It is wrapped in `<selectionContext.Provider value={null}>` so it uses its own `selection` prop instead of the neon `<Selection>`, and uses `selectionLayer={11}` so the two don't mix. This works because `EffectComposer` collects effects from the three.js group children, not React children. Intensity is 0.4 dark / 0.2 light.
+- The crown hands its group to `App` via `CrownGlowContext` (a state setter, not a ref). It mounts later inside Suspense, and the effect only re-reads `selection` when the value changes.
+- **Bug found:** passing the group made nothing glow (no warning). A postprocessing `Selection` only enables the bloom layer on the exact objects given, not their children. `App` now traverses the group and passes its 7 meshes.
+- The main neon bloom threshold is back to 0, since the crown is no longer in it.
+
+`tsc --noEmit` clean, debug logging removed, no new console errors.
+
+---
+
+## 2026-10-27 — Color-cycling edge ring lights on both photo strips
+
+The user asked for ring lights like the top one along the top and bottom of every photo strip, kept to pink/blue/yellow.
+- `NeonBillboards.tsx`: `edgeLights` adds 4 tori (top and bottom of each `RINGS` strip) at the strip's own radius, `EDGE_LIGHT_GAP_RATIO = 0.008h` off the edge, same tube thickness as the top ring light, inside the neon `<Select enabled>` so they bloom.
+- Each cycles through `PALETTE` (pink → blue → yellow, `EDGE_LIGHT_CYCLE_SECONDS = 9`). It rests on each color for 60% of its turn (`EDGE_LIGHT_HOLD`), then smoothstep-blends to the next. The rings are phase-staggered by a quarter cycle each, so they're never all the same color. Breathing is now ±25% (multiplicative) on both the edge rings and the top ring light.
+- **Light-mode fix (screenshot-verified):** at the dark-mode HDR intensity (×4), yellow and cyan tone-map to near-white and vanished against the light bg. Added `RING_LIGHT_INTENSITY_LIGHT_MODE = 1.3` (via `useTheme`), which keeps them saturated. This applies to the top ring light too.
+
+`tsc --noEmit` clean, no new console errors.
+
+---
+
+## 2026-10-27 — Correction: fitted ring lights at strip edges (replaces color-cycling edge rings)
+
+I misread the previous request. The user wanted the cross ring-light *concept* repeated, not rings hugging the strips. The concept is: radius fitted to the piece's silhouette at that height plus clearance, sitting a small gap off a strip edge. They also pointed out the head strip's top already has its ring (the blue one around the cross).
+- Removed the strip-radius, color-cycling `edgeLights` (and the `EDGE_LIGHT_*` constants).
+- The single `ringLight` became a `RING_LIGHTS` table, built in one `ringLights` memo, where each entry is `{ strip, side, color }`:
+  - head strip top: blue (the original, around the cross)
+  - head strip bottom: pink
+  - middle strip top: yellow
+  - middle strip bottom: blue
+- Each ring sits `RING_LIGHT_GAP_RATIO` (0.035h) off its strip edge. Its radius = widest point of the piece in a `RING_LIGHT_FIT_BAND_RATIO` band extending *away* from the strip (up for top rings, down for bottom ones) + `RING_LIGHT_CLEARANCE_RATIO`. So each one fits its own area: the cross, the cup taper, the collar, and the body flare.
+- Fixed colors (no cycling), each breathing ±25% slightly out of phase. The light-mode intensity (1.3) still applies.
+
+Screenshot-verified in both themes. `tsc --noEmit` clean.
+
+---
+
+## 2026-10-27 — Messy graffiti sprayed on the king's base
+
+The user asked for messy graffiti on the bottom-right of the piece. Their choices: sprayed onto the base (spins with the piece), no words.
+- New `frontend/src/components/graffiti.ts`:
+  - `drawGraffiti` paints a 1024×768 canvas procedurally with a seeded PRNG (mulberry32, `SEED = 2077`, so it's identical every load). Layers: neon overspray haze, black-outlined neon scribble loops (two-pass "spray" stroke: soft halo + solid core), a crown doodle, an arrow, X marks, drips with beads, and splatter clusters. Colors are the neon trio plus white/black.
+  - `sprayGraffiti(scene, pivot, h)` raycasts at the base (pivot-local `y = −0.36h`) from world direction `(0.45, 0, 1)`, which is front-right of camera at load. It projects a three.js `DecalGeometry` (1.0 × 0.6 × 0.7 world) around the hit so it wraps the curved base, transforms it into the hit mesh's local space, and `mesh.add`s it so it spins with the piece. It returns a cleanup, because the glb scene is cached and shared, so remount/HMR would otherwise stack copies.
+  - Material: `MeshStandardMaterial`, transparent, `polygonOffset −4`, `roughness 0.55`, `envMapIntensity 0.35`.
+- `KingModel.tsx`: all four `scene.traverse` passes (recolor, size, radius profile, car-paint swap) skip `userData.isGraffiti`, so the light-mode blackout and paint conversion don't touch it. `sprayGraffiti` runs in a `useEffect` after the pivot mounts.
+- Screenshot-tuned: the first version was too small and too far round the side, so I enlarged it and moved the spray direction toward the front. On the white (dark-mode) base the neon washed out, so I lowered `envMapIntensity` and outlined every scribble in black (invisible on the black light-mode base, so that look is unchanged).
+
+`tsc --noEmit` clean, no new console errors.
+
+---
+
+## 2026-10-27 — Graffiti enlarged to cover the base's bottom-right; edge fixes
+
+The user asked for the graffiti to fully cover the bottom-right of the piece. Iterated with screenshots in both themes.
+- Bigger and denser: decal `1.6 × 0.95 × 1.6` world, sprayed from `(0.7, 0, 1)` (~35° right of camera). More layers to fill the area: haze 7→12, scribbles 9→16, X marks 5→8, splatter 6→10.
+- **Hard edge #1, decal box border:** fixed by feathering the canvas borders to transparent (`destination-in` gradients, `EDGE_FEATHER_X 0.12` / `EDGE_FEATHER_Y 0.15`).
+- **Hard edge #2, mesh seam:** the glb piece is **two meshes** (`Cylinder.001`, `Cylinder.002`; inspected the GLB JSON chunk directly). `DecalGeometry` only projects onto one mesh, so the paint stopped dead at their seam. `sprayGraffiti` now projects onto every non-graffiti mesh (skipping empty results) and re-parents each piece into its own mesh's local space. They share one texture and material.
+- **Hard edge #3, depth clip on the widest part (lower rim):** the surface curving round past the projector's depth wall got cut flat. Feathering the texture by width fixed that but shrank the coverage a lot (paint bunched at the right silhouette). Final fix: an **angle-based fade as per-vertex alpha** (RGBA `color` attribute, `vertexColors: true`). The alpha is a smoothstep of `dot(world normal, SPRAY_FROM)` from 0.05 to 0.45 (`GRAZING_FADE`), like spray thinning out round a curve. This lets the box be deep and wide enough to wrap the whole near side, and surfaces facing away are fully transparent.
+
+`tsc --noEmit` clean, no new console errors.
+
+---
+
+## 2026-10-27 — Graffiti removed
+
+At the user's request, removed the graffiti entirely: deleted `frontend/src/components/graffiti.ts`, removed the `sprayGraffiti` effect and import from `KingModel.tsx`, and reverted the four `userData.isGraffiti` skips in its mesh traversals back to plain `!mesh.isMesh`. No references remain. `tsc --noEmit` clean. (Worth keeping from that work: the king glb is two meshes, `Cylinder.001` / `Cylinder.002`, so anything projected onto the surface must cover both.)
+
+---
+
+## 2026-10-27 — Light mode removed app-wide; ASCII rain background
+
+### Light mode removed (user: "NO white mode, remove that option")
+The toggle was on 5 screens, so I removed it app-wide rather than just on the landing page.
+- Deleted `components/ThemeToggle.tsx` and `contexts/ThemeContext.tsx` (and the now-empty `contexts/`). Removed `<ThemeProvider>` from `main.tsx` and the toggle from `App.tsx`, `LoginPage`, `SignupPage`, `UploadPage`, `AppHeader`.
+- `index.css`: removed the `:root[data-theme="light"]` palette, the whole Theme Toggle CSS section (~410 lines), and the light-mode `.pl__dot-layer` override.
+- Components that branched on `isDark` now keep only the dark branch:
+  - `DiagramChart`: `SERIES` (the dark variant), white text/grid.
+  - `ShaderBackground` (unused, but still compiled): `invert` fixed at 0.
+  - `App`: single `SCENE_BG`, bloom 1.6 / crown 0.4.
+  - `NeonBillboards`: removed `RING_LIGHT_INTENSITY_LIGHT_MODE`.
+  - `KingModel`: removed the light-mode black recolor effect, so the car-paint swap just keeps `original.color` (no more `userData.originalColorHex`).
+- A stale `localStorage.theme = 'light'` from before is simply ignored now (verified).
+
+### ASCII background (new `components/AsciiBackground.tsx`)
+The user wanted running ASCII that gets more visible and compact further from the piece, looser and more hidden nearer, and is empty around the piece.
+- A full-screen `ShaderMaterial` quad pinned to the far plane (`gl_Position.z = w`, so depth 1.0, `depthWrite: false`, transparent). It draws over the cleared bg and behind everything, so the king occludes it. It isn't in any bloom selection.
+- A glyph atlas of 32 ASCII characters is drawn to a canvas (bold monospace).
+- **Running:** per-column Matrix-style rain. A sawtooth runs down each column at its own speed (3–11 cells/s) with a variable trail, bright at the head and fading up the tail, and glyphs flicker as they change.
+- **Clear zone:** a rounded rectangle (power-3 superellipse) along the king's *leaned* screen axes: half 1.0 × 1.95 world, lifted 0.25 toward the crown. It's re-projected every frame from `KING_POSITION` + `ROLL_Z_ROTATION` (now exported from `KingModel`), so it tracks resizes.
+- **Distance behavior:** visibility ramps from the zone edge (d = 1) to d = 3.2. Three grids (17×24, 12×17, 8×11 CSS px) are crossfaded by distance (handover at d = 1.9 / 2.7), so near is big and sparse, far is small and dense. Glyph density and brightness both follow visibility.
+- `KING_POSITION` is now a shared constant in `App.tsx` (used by both the king group and the ASCII zone).
+
+Screenshot-verified at 1400×850 and 900×900. `tsc --noEmit` clean, no new console errors.
+
+---
+
+## 2026-10-27 — ASCII background reworked to the user's concentric-circle sketch
+
+The user sent a sketch with white/red/orange circles around the piece. Inside white: empty. White→red: slightly visible, very loose. Red→orange: more visible, between loose and compact. Beyond orange: very visible, very compact. No rain: characters should change like something being deciphered. White–gray only (white = most visible, very dark gray blending into the bg = least), with smooth transitions.
+- `AsciiBackground.tsx` rewritten:
+  - **Zones:** circular (screen-space) around the king's projected center. Radii are measured from the sketch as fractions of **half the viewport width**: clear 0.58, loose 0.79, medium 1.0, so the outer circle meets the left/right edges at the king's height, as drawn. Fractions of the viewport *height* left the outer bands off-screen on less-wide windows. Each circle has a smooth crossfade (`BLEND = 0.05`).
+  - **Bands:** each has its own grid size (20×28 → 13×18 → 8×11 CSS px, loose → compact), density (0.16 → 0.45 → 0.92), and on-screen gray range (0.10–0.17 → 0.22–0.45 → 0.55–0.97 sRGB, vs bg ≈ 0.04).
+  - **Deciphering:** each cell runs its own 2.5–6 s cycle. For the first 30% it scrambles through random glyphs (18/s, slight 1.25× flare), then settles on one glyph and holds it until the next cycle.
+  - Removed the lean/rain/cyan code and the `lean` prop (`ROLL_Z_ROTATION` is no longer exported).
+- **Tone-mapping gotcha:** the ACES pass crushes dark values, so a "very dark gray" given as a raw shader value came out identical to the bg. The ACES helpers moved out of `App.tsx` into new `src/lib/toneMapping.ts` (`inverseAcesFilmic`, `preToneMapped`, plus a new `preToneMappedGray`). Band grays are specified as on-screen sRGB levels and inverted through ACES at setup.
+
+Screenshot-verified at 1400×850 and 1800×820. `tsc --noEmit` clean.
+
+---
+
+## 2026-10-27 — ASCII background removed
+
+At the user's request, removed the ASCII background entirely: deleted `components/AsciiBackground.tsx`, removed it from `App.tsx`, and dropped the now-unused `preToneMappedGray` from `lib/toneMapping.ts`. `preToneMapped`/`inverseAcesFilmic` stay there (they're used for the scene bg). `KING_POSITION` stays in `App.tsx` for the king group. `tsc --noEmit` clean.
+
+---

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ThemeToggle from './ThemeToggle';
 
 export default function AppHeader() {
   const navigate = useNavigate();
@@ -25,7 +24,6 @@ export default function AppHeader() {
   return (
     <header style={s.header}>
       <div style={s.headerActions}>
-        <ThemeToggle />
         <div style={s.profileWrap} ref={menuRef}>
           <button
             style={s.profileCircle}

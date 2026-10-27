@@ -1,13 +1,11 @@
 import { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
-import { useTheme } from '../contexts/ThemeContext';
 import type { Diagram } from '../hooks/useDeepEvaluation';
 
 // Same validated categorical palette as the old EvalChart (dataviz skill's
-// reference default) — fixed order, never cycled/reassigned. Light/dark
-// pairs both pass the CVD + normal-vision + contrast checks.
-const SERIES_LIGHT = ['#2a78d6', '#008300', '#e87ba4', '#eda100'];
-const SERIES_DARK = ['#3987e5', '#008300', '#d55181', '#c98500'];
+// reference default, dark-mode variant) — fixed order, never
+// cycled/reassigned. Passes the CVD + normal-vision + contrast checks.
+const SERIES = ['#3987e5', '#008300', '#d55181', '#c98500'];
 
 function buildOption(diagram: Diagram, colors: string[], textColor: string, gridColor: string): echarts.EChartsOption {
   const base: echarts.EChartsOption = {
@@ -71,7 +69,6 @@ function buildOption(diagram: Diagram, colors: string[], textColor: string, grid
 export default function DiagramChart({ diagram }: { diagram: Diagram }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  const { isDark } = useTheme();
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -90,11 +87,11 @@ export default function DiagramChart({ diagram }: { diagram: Diagram }) {
 
   useEffect(() => {
     if (!chartRef.current) return;
-    const colors = isDark ? SERIES_DARK : SERIES_LIGHT;
-    const textColor = isDark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)';
-    const gridColor = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)';
+    const colors = SERIES;
+    const textColor = 'rgba(255,255,255,0.75)';
+    const gridColor = 'rgba(255,255,255,0.12)';
     chartRef.current.setOption(buildOption(diagram, colors, textColor, gridColor), true);
-  }, [diagram, isDark]);
+  }, [diagram]);
 
   return <div ref={containerRef} style={{ width: '100%', height: 260 }} />;
 }
